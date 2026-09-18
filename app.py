@@ -32,27 +32,68 @@ PRED_COLUMNS = ["logged_at", "symbol", "horizon", "entry_price", "pred_pct",
 
 HORIZON_DAYS = {"5-10天波段": 7, "3个月中线": 63}
 HORIZON_CALENDAR_DAYS = {"5-10天波段": 8, "3个月中线": 95}
-# 硬上限：不管信号多强，预测涨跌幅都不能超过这个区间（这是最重要的"合理化"约束）
 HORIZON_CAP_PCT = {"5-10天波段": 15.0, "3个月中线": 35.0}
-DAMPEN_FACTOR = 0.55  # 把"信号驱动"的预期收益打折，避免对短期噪音过度自信
+DAMPEN_FACTOR = 0.55
 
 # =============================================================================
-# 1. 视觉样式（清爽 / 分组配色）
+# 1. 视觉样式（彻底消除白底刺眼，护眼温和微光暗色）
 # =============================================================================
 st.markdown("""
 <style>
-    .stApp { background-color: #0A0D14; color: #E2E8F0;
-             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    /* 全局背景与文字 */
+    .stApp { 
+        background-color: #0A0D14 !important; 
+        color: #CBD5E1 !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+    }
     header, footer, #MainMenu { visibility: hidden; }
 
-    .terminal-card { background: linear-gradient(135deg, #131824, #0F131D);
-        border: 1px solid #1E2638; border-radius: 12px; padding: 20px;
-        margin-bottom: 16px; box-shadow: 0 4px 18px rgba(0,0,0,0.35); }
+    /* 修复所有原生 Input 输入框白底刺眼 */
+    div[data-baseweb="input"] {
+        background-color: #131824 !important;
+        border: 1px solid #2A344B !important;
+        border-radius: 8px !important;
+        color: #F8FAFC !important;
+    }
+    input {
+        color: #F8FAFC !important;
+        background-color: transparent !important;
+    }
+
+    /* 修复 Radio 单选框白底刺眼 */
+    div[data-testid="stMarkdownContainer"] p {
+        color: #CBD5E1 !important;
+    }
+    
+    /* 修复 Expander 折叠面板白底刺眼 */
+    div[data-testid="stExpander"] {
+        background-color: #0F131D !important;
+        border: 1px solid #1E2638 !important;
+        border-radius: 10px !important;
+    }
+
+    /* 修复各种 Notification 信息提示框 */
+    div[data-testid="stNotification"] {
+        background-color: #131824 !important;
+        border: 1px solid #2A344B !important;
+        color: #CBD5E1 !important;
+    }
+
+    /* 卡片与组建容器 */
+    .terminal-card { 
+        background: linear-gradient(135deg, #131824, #0F131D);
+        border: 1px solid #1E2638; 
+        border-radius: 12px; 
+        padding: 20px;
+        margin-bottom: 16px; 
+        box-shadow: 0 4px 18px rgba(0,0,0,0.35); 
+    }
 
     .terminal-title { font-size: 1.5rem; font-weight: 700; color: #F8FAFC; letter-spacing: -0.3px; }
     .sub-caption { color: #64748B; font-size: 0.75rem; text-transform: uppercase;
         font-weight: 600; letter-spacing: 0.8px; margin-bottom: 8px; }
 
+    /* 柔和护眼标签 */
     .tag-bull { background: rgba(16,185,129,0.12); color:#10B981; border:1px solid rgba(16,185,129,0.3);
         padding:4px 12px; border-radius:6px; font-weight:600; font-size:0.85rem; }
     .tag-bear { background: rgba(239,68,68,0.12); color:#EF4444; border:1px solid rgba(239,68,68,0.3);
@@ -60,29 +101,50 @@ st.markdown("""
     .tag-neutral { background: rgba(245,158,11,0.12); color:#F59E0B; border:1px solid rgba(245,158,11,0.3);
         padding:4px 12px; border-radius:6px; font-weight:600; font-size:0.85rem; }
 
-    .signal-group-bull { background: rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.25);
+    /* 信号归因卡片 */
+    .signal-group-bull { background: rgba(16,185,129,0.05); border:1px solid rgba(16,185,129,0.2);
         border-radius:10px; padding:14px; margin-bottom:10px; }
-    .signal-group-bear { background: rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.25);
+    .signal-group-bear { background: rgba(239,68,68,0.05); border:1px solid rgba(239,68,68,0.2);
         border-radius:10px; padding:14px; margin-bottom:10px; }
-    .signal-group-neutral { background: rgba(148,163,184,0.06); border:1px solid rgba(148,163,184,0.2);
+    .signal-group-neutral { background: rgba(148,163,184,0.05); border:1px solid rgba(148,163,184,0.15);
         border-radius:10px; padding:14px; margin-bottom:10px; }
-    .signal-row { font-size:0.9rem; padding:4px 0; border-bottom:1px dashed rgba(148,163,184,0.12); }
+    .signal-row { font-size:0.88rem; padding:5px 0; border-bottom:1px dashed rgba(148,163,184,0.1); color:#94A3B8; }
     .signal-row:last-child { border-bottom:none; }
 
-    .risk-banner { background: rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35);
-        border-radius:8px; padding:10px 14px; font-size:0.85rem; color:#FBBF24; margin-bottom:10px; }
-    .reason-box { background: rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.3);
-        border-radius:8px; padding:12px 14px; font-size:0.88rem; color:#BFDBFE; margin-top:10px; }
+    .risk-banner { background: rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25);
+        border-radius:8px; padding:10px 14px; font-size:0.85rem; color:#FBBF24; margin-bottom:12px; }
+    .reason-box { background: rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.25);
+        border-radius:8px; padding:12px 14px; font-size:0.88rem; color:#93C5FD; margin-top:10px; }
 
     .api-badge { font-size:0.78rem; color:#64748B; background-color:#131824; border:1px solid #1E2638;
         padding:6px 14px; border-radius:20px; float:right; }
 
-    div[data-testid="stDataFrame"] { background-color:#0F131D; border:1px solid #1E2638; border-radius:8px; padding:4px; }
+    /* 修复表格的背景与高亮刺眼 */
+    div[data-testid="stDataFrame"] { 
+        background-color:#0F131D !important; 
+        border:1px solid #1E2638 !important; 
+        border-radius:8px !important; 
+        padding:4px !important; 
+    }
+    
+    /* 按钮样式强化 */
+    .stButton>button {
+        background-color: #1E2638 !important;
+        color: #E2E8F0 !important;
+        border: 1px solid #2A344B !important;
+        border-radius: 6px !important;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        background-color: #2A344B !important;
+        color: #FFFFFF !important;
+        border-color: #3B82F6 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. 预测记录 / 自我校准（简化版"从历史误差中学习"）
+# 2. 预测记录 / 自我校准
 # =============================================================================
 def _load_pred_log():
     if os.path.exists(PRED_LOG_PATH):
@@ -112,7 +174,6 @@ def log_prediction(symbol, horizon, entry_price, pred_pct, target_low, target_hi
     _save_pred_log(df)
 
 def settle_predictions():
-    """把已到期的历史预测，回填真实价格并计算误差 —— 这是"自我复盘"的核心。"""
     df = _load_pred_log()
     if df.empty:
         return
@@ -141,11 +202,6 @@ def settle_predictions():
     _save_pred_log(df)
 
 def get_calibration():
-    """
-    用历史"预测 vs 实际"的误差，算出一个校准系数，用来给新预测降温/纠偏。
-    这不是真正的机器学习模型，而是一个透明、可解释的反馈环：
-    预测系统性偏乐观 → 校准系数变小 → 未来预测的幅度自动收窄。
-    """
     df = _load_pred_log()
     settled = df[df["status"] == "settled"].dropna(subset=["pred_pct", "actual_pct"])
     if len(settled) < 3:
@@ -192,7 +248,7 @@ def fetch_spy_returns():
     return 0.0
 
 # =============================================================================
-# 4. 核心量化诊断引擎（更多因子 + 分组 + 合理化预测 + 选股理由）
+# 4. 核心量化诊断引擎
 # =============================================================================
 @st.cache_data(ttl=120)
 def quant_evaluate_stock(symbol, horizon="5-10天波段"):
@@ -203,7 +259,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             return None
 
         price, change, pct = fetch_quote_data(symbol)
-        signals = []  # each: {factor, light, desc, w}  w in {-1,0,1}
+        signals = []
 
         # --- PE 估值 ---
         info = ticker.info if hasattr(ticker, 'info') else {}
@@ -296,7 +352,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         else:
             signals.append({"factor": "KD 随机指标", "light": "🟡 中性", "desc": f"K={k_val:.0f} D={d_val:.0f}", "w": 0})
 
-        # --- 相对大盘强弱（vs SPY 20日） ---
+        # --- 相对大盘强弱 ---
         spy_ret = fetch_spy_returns()
         stock_ret = (df['Close'].iloc[-1] / df['Close'].iloc[-21] - 1) if len(df) > 21 else 0.0
         rel_strength = stock_ret - spy_ret
@@ -307,7 +363,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         else:
             signals.append({"factor": "相对大盘强弱", "light": "🟡 中性", "desc": "与大盘同步", "w": 0})
 
-        # --- ATR 波动率（风险提示，不计入方向评分）---
+        # --- ATR 波动率 ---
         tr = pd.concat([
             df['High'] - df['Low'],
             (df['High'] - df['Close'].shift()).abs(),
@@ -317,7 +373,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         atr_pct = (atr / price * 100) if price else 0.0
         high_vol_flag = atr_pct > 5.0
 
-        # --- 综合评分：等权求和，5-95 区间，不再是单一硬编码公式 ---
+        # --- 综合评分 ---
         raw_sum = sum(s["w"] for s in signals)
         score = int(np.clip(50 + raw_sum * 6, 5, 95))
 
@@ -330,7 +386,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         else:
             rating, cmd = "A 偏空避险", "🔴 建议规避/减仓"
 
-        # --- 合理化的预期收益：sqrt(时间) 波动缩放 + 打折 + 硬上限 + 历史校准 ---
+        # --- 预期收益率 ---
         horizon_days = HORIZON_DAYS[horizon]
         cap = HORIZON_CAP_PCT[horizon]
         vol_daily = df['Close'].pct_change().dropna().tail(30).std()
@@ -341,7 +397,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100
         exp_pct = direction * horizon_vol_pct * DAMPEN_FACTOR * calib["factor"]
         exp_pct = float(np.clip(exp_pct, -cap, cap))
-        # 用一半的区间波动做不确定性区间，避免给出虚假精确的单点预测
+        
         band = min(horizon_vol_pct * 0.5, cap)
         target_low_pct = float(np.clip(exp_pct - band, -cap * 1.3, cap * 1.3))
         target_high_pct = float(np.clip(exp_pct + band, -cap * 1.3, cap * 1.3))
@@ -351,7 +407,6 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
 
         stop = price - 1.5 * atr if score >= 50 else price + 1.5 * atr
 
-        # --- 选股理由：取贡献最大的 2-3 个信号，生成一句话解释 ---
         bull_factors = [s for s in signals if s["w"] == 1]
         bear_factors = [s for s in signals if s["w"] == -1]
         if score >= 65 and bull_factors:
@@ -366,7 +421,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         return {
             "symbol": symbol, "price": price, "pct": pct, "score": score,
             "rating": rating, "cmd": cmd,
-            "entry": f"${price*0.996:.2f} – ${price*1.004:.2f}",
+            "entry": f"${price*0.996:.2f} –${price*1.004:.2f}",
             "target": target_price, "target_pct": exp_pct,
             "target_low": target_low, "target_high": target_high,
             "target_low_pct": target_low_pct, "target_high_pct": target_high_pct,
@@ -479,7 +534,7 @@ with tab1:
                 color_p = "#10B981" if res['target_pct'] >= 0 else "#EF4444"
                 st.write(f"• **{selected_horizon}预期区间:** "
                          f"<b style='color:{color_p};'>{res['target_low_pct']:+.1f}% ~ {res['target_high_pct']:+.1f}%</b> "
-                         f"（中枢 ${res['target']:.2f}，区间 ${res['target_low']:.2f} ~ ${res['target_high']:.2f}）",
+                         f"（中枢 ${res['target']:.2f}，区间 ${res['target_low']:.2f} ~${res['target_high']:.2f}）",
                          unsafe_allow_html=True)
                 st.write(f"• **参考止损位（1.5×ATR）:** `${res['stop']:.2f}`")
 
@@ -487,7 +542,7 @@ with tab1:
 
                 if st.button("📌 记录本次预测以供复盘", key=f"log_{res['symbol']}"):
                     log_prediction(res['symbol'], selected_horizon, res['price'], res['target_pct'],
-                                    res['target_low_pct'], res['target_high_pct'])
+                                   res['target_low_pct'], res['target_high_pct'])
                     st.success("已记录，到期后可在「预测复盘」标签查看实际结果。")
 
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -502,7 +557,7 @@ with tab1:
                 st.markdown(textwrap.dedent(f"""
                 - **评分**：{len(res['signals'])} 个技术/估值/相对强弱因子等权打分，每个利好 +6 分、利空 -6 分，以 50 分为中枢，5–95 分封顶。
                 - **预期收益率**：不是简单外推，而是「方向强度 × 历史波动率按 √时间 缩放 × 0.55 折算 × 历史校准系数」，
-                  并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，避免出现脱离实际的极端数字（例如短线 100%+ 的收益预测）。
+                  并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，避免出现脱离实际的极端数字。
                 - **历史校准系数**：当前为 **{res['calib']['factor']:.2f}**（基于 {res['calib']['n']} 条已到期的历史预测计算，
                   样本不足 3 条时默认 1.0）。如果过去的预测持续偏乐观，这个系数会自动变小，让未来的预测更保守。
                 """))
@@ -552,7 +607,7 @@ with tab3:
 with tab4:
     st.subheader("🧠 预测复盘 & 自我校准")
     st.caption("说明：这不是黑箱式的『自动学习』，而是一个透明的反馈环 —— 系统记录每次预测，到期后自动对比真实价格，"
-               "用历史误差算出一个校准系数（在 Tab1 的方法说明中可见），用于给未来的预测幅度降温或修正。")
+               "用历史误差算出一个校准系数，用于给未来的预测幅度降温或修正。")
 
     calib = get_calibration()
     c1, c2, c3 = st.columns(3)
