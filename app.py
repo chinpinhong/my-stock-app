@@ -27,7 +27,7 @@ if 'settled_this_session' not in st.session_state:
 FINNHUB_API_KEY = "YOUR_FINNHUB_API_KEY_HERE"
 PRED_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prediction_log.csv")
 PRED_COLUMNS = ["logged_at", "symbol", "horizon", "entry_price", "pred_pct",
-                "target_low", "target_high", "due_date", "status",
+                "target_price", "due_date", "status",
                 "actual_price", "actual_pct", "error_pct", "direction_hit"]
 
 HORIZON_DAYS = {"5-10天波段": 7, "3个月中线": 63}
@@ -36,11 +36,10 @@ HORIZON_CAP_PCT = {"5-10天波段": 15.0, "3个月中线": 35.0}
 DAMPEN_FACTOR = 0.55
 
 # =============================================================================
-# 1. 视觉样式（输入框背景设为白色，打字字体设为黑色 #000000）
+# 1. 视觉样式
 # =============================================================================
 st.markdown("""
 <style>
-    /* 全局背景与文字 */
     .stApp { 
         background-color: #0A0D14 !important; 
         color: #CBD5E1 !important;
@@ -48,7 +47,6 @@ st.markdown("""
     }
     header, footer, #MainMenu { visibility: hidden; }
 
-    /* Input 输入框：背景设为白色，打字字体改为黑色 #000000 */
     div[data-baseweb="input"] {
         background-color: #FFFFFF !important;
         border: 1px solid #3B82F6 !important;
@@ -62,26 +60,20 @@ st.markdown("""
         font-size: 1rem !important;
     }
 
-    /* 修复 Radio 单选框文字 */
-    div[data-testid="stMarkdownContainer"] p {
-        color: #CBD5E1 !important;
-    }
+    div[data-testid="stMarkdownContainer"] p { color: #CBD5E1 !important; }
     
-    /* 折叠面板 */
     div[data-testid="stExpander"] {
         background-color: #0F131D !important;
         border: 1px solid #1E2638 !important;
         border-radius: 10px !important;
     }
 
-    /* Notification 信息提示框 */
     div[data-testid="stNotification"] {
         background-color: #131824 !important;
         border: 1px solid #2A344B !important;
         color: #CBD5E1 !important;
     }
 
-    /* 卡片与组件容器 */
     .terminal-card { 
         background: linear-gradient(135deg, #131824, #0F131D);
         border: 1px solid #1E2638; 
@@ -95,7 +87,6 @@ st.markdown("""
     .sub-caption { color: #64748B; font-size: 0.75rem; text-transform: uppercase;
         font-weight: 600; letter-spacing: 0.8px; margin-bottom: 8px; }
 
-    /* 柔和护眼标签 */
     .tag-bull { background: rgba(16,185,129,0.12); color:#10B981; border:1px solid rgba(16,185,129,0.3);
         padding:4px 12px; border-radius:6px; font-weight:600; font-size:0.85rem; }
     .tag-bear { background: rgba(239,68,68,0.12); color:#EF4444; border:1px solid rgba(239,68,68,0.3);
@@ -103,7 +94,6 @@ st.markdown("""
     .tag-neutral { background: rgba(245,158,11,0.12); color:#F59E0B; border:1px solid rgba(245,158,11,0.3);
         padding:4px 12px; border-radius:6px; font-weight:600; font-size:0.85rem; }
 
-    /* 信号归因卡片 */
     .signal-group-bull { background: rgba(16,185,129,0.05); border:1px solid rgba(16,185,129,0.2);
         border-radius:10px; padding:14px; margin-bottom:10px; }
     .signal-group-bear { background: rgba(239,68,68,0.05); border:1px solid rgba(239,68,68,0.2);
@@ -123,7 +113,6 @@ st.markdown("""
     .api-badge { font-size:0.78rem; color:#64748B; background-color:#131824; border:1px solid #1E2638;
         padding:6px 14px; border-radius:20px; float:right; }
 
-    /* 表格背景 */
     div[data-testid="stDataFrame"] { 
         background-color:#0F131D !important; 
         border:1px solid #1E2638 !important; 
@@ -131,7 +120,6 @@ st.markdown("""
         padding:4px !important; 
     }
     
-    /* 按钮样式 */
     .stButton>button {
         background-color: #1E2638 !important;
         color: #E2E8F0 !important;
@@ -164,13 +152,13 @@ def _save_pred_log(df):
     except Exception:
         pass
 
-def log_prediction(symbol, horizon, entry_price, pred_pct, target_low, target_high):
+def log_prediction(symbol, horizon, entry_price, pred_pct, target_price):
     df = _load_pred_log()
     due = (datetime.now() + timedelta(days=HORIZON_CALENDAR_DAYS[horizon])).strftime("%Y-%m-%d")
     new_row = {
         "logged_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "symbol": symbol, "horizon": horizon, "entry_price": entry_price,
-        "pred_pct": pred_pct, "target_low": target_low, "target_high": target_high,
+        "pred_pct": pred_pct, "target_price": target_price,
         "due_date": due, "status": "pending", "actual_price": np.nan,
         "actual_pct": np.nan, "error_pct": np.nan, "direction_hit": np.nan
     }
@@ -243,7 +231,6 @@ def fetch_quote_data(symbol):
 
 @st.cache_data(ttl=300)
 def fetch_vix_data():
-    """获取当天 CBOE VIX 恐慌指数"""
     try:
         vix = yf.Ticker("^VIX").history(period="2d")
         if not vix.empty:
@@ -414,7 +401,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         else:
             rating, cmd = "A 偏空避险", "🔴 建议规避/减仓"
 
-        # --- 预期收益率 ---
+        # --- 单一确定目标价计算 ---
         horizon_days = HORIZON_DAYS[horizon]
         cap = HORIZON_CAP_PCT[horizon]
         vol_daily = df['Close'].pct_change().dropna().tail(30).std()
@@ -422,39 +409,30 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             vol_daily = 0.02
             
         vix_multiplier = 1.0 + max(0, (vix_val - 20) / 40.0)
-        
         direction = float(np.clip((score - 50) / 50, -1, 1))
         calib = get_calibration()
         horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100 * vix_multiplier
         exp_pct = direction * horizon_vol_pct * DAMPEN_FACTOR * calib["factor"]
         exp_pct = float(np.clip(exp_pct, -cap, cap))
         
-        band = min(horizon_vol_pct * 0.5, cap)
-        target_low_pct = float(np.clip(exp_pct - band, -cap * 1.3, cap * 1.3))
-        target_high_pct = float(np.clip(exp_pct + band, -cap * 1.3, cap * 1.3))
+        # 计算单一极大概率目标价
         target_price = price * (1 + exp_pct / 100.0)
-        target_low = price * (1 + target_low_pct / 100.0)
-        target_high = price * (1 + target_high_pct / 100.0)
 
         # 止损位计算
         stop = price - 1.5 * atr if score >= 50 else price + 1.5 * atr
 
-        # 止盈离场逻辑（卖出信号判断）
-        take_profit_1 = target_low
-        take_profit_2 = target_high
-        
+        # 单一止盈/清仓策略
         if score >= 50:
             exit_strategy = (
-                f"🎯 <b>止盈（卖出）策略：</b><br>"
-                f"• <b>保守止盈卖出价：</b> `${take_profit_1:.2f}` ({target_low_pct:+.1f}%) —— 触及建议先卖出 50% 锁定利润。<br>"
-                f"• <b>极限止盈卖出价：</b> `${take_profit_2:.2f}` ({target_high_pct:+.1f}%) —— 触及建议清仓离场。<br>"
-                f"🛑 <b>止损卖出价：</b> `${stop:.2f}` —— 若跌破此价格无条件止损卖出离场。"
+                f"🎯 <b>计算止盈卖出价（确定值）：</b> `${target_price:.2f}` ({exp_pct:+.1f}%)<br>"
+                f"• <b>策略建议：</b> 触及此价格时建议全部止盈清仓落袋为安。<br>"
+                f"🛑 <b>参考止损卖出价：</b> `${stop:.2f}` —— 跌破无条件止损。"
             )
         else:
             exit_strategy = (
-                f"⚠️ <b>当前属于弱势/偏空标的，建议卖出离场：</b><br>"
-                f"• 建议在 `${price:.2f}` 附近减仓或平仓；<br>"
-                f"• 强止损反弹位： `${stop:.2f}`（向上突破则止损空单/清仓）。"
+                f"⚠️ <b>当前处于偏空或弱势，建议直接平仓离场：</b><br>"
+                f"• 推荐离场参考价： `${price:.2f}`<br>"
+                f"• 空单止损反弹位： `${stop:.2f}`"
             )
 
         bull_factors = [s for s in signals if s["w"] == 1]
@@ -473,8 +451,6 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             "rating": rating, "cmd": cmd,
             "entry": f"${price*0.996:.2f} –${price*1.004:.2f}",
             "target": target_price, "target_pct": exp_pct,
-            "target_low": target_low, "target_high": target_high,
-            "target_low_pct": target_low_pct, "target_high_pct": target_high_pct,
             "stop": stop, "exit_strategy": exit_strategy,
             "atr_pct": atr_pct, "high_vol_flag": high_vol_flag,
             "signals": signals, "reason": reason, "calib": calib, "vix_val": vix_val
@@ -512,14 +488,13 @@ with col_h:
 with col_q:
     st.markdown(f"<div class='api-badge'>📡 数据链路调用: <b>{st.session_state.api_counter} / 60</b></div>", unsafe_allow_html=True)
 
-st.caption("⚠️ 本工具基于公开技术指标生成的量化参考信号，仅供研究学习使用，不构成投资建议；预测区间已做统计学合理化处理，仍可能出现较大偏差。")
+st.caption("⚠️ 本工具基于公开技术指标生成的量化参考信号，仅供研究学习使用，不构成投资建议。")
 st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
 col_time, c_vix, c_win, c_pnl, c_cap = st.columns([1.2, 1, 1, 1, 1])
 with col_time:
     selected_horizon = st.radio("⏱️ 策略执行时间周期:", list(HORIZON_DAYS.keys()), horizontal=True)
 with c_vix:
-    vix_color = "#EF4444" if vix_val >= 25 else ("#F59E0B" if vix_val >= 20 else "#10B981")
     st.metric("VIX 恐慌指数", f"{vix_val:.2f}", delta=f"{vix_pct:+.2f}%", delta_color="inverse")
 with c_win:
     st.metric("实盘策略胜率", f"{win_rate}%", delta="从零计算")
@@ -572,9 +547,9 @@ with tab1:
             st.markdown(f"#### 📌 {res['symbol']} 深度量化报告")
 
             if res["vix_val"] >= 25:
-                st.markdown(f"<div class='risk-banner'>🚨 <b>市场风控预警：</b>当前大盘 VIX 恐慌指数升至 <b>{res['vix_val']:.1f}</b>，市场情绪剧烈波动！预测区间已自动调宽，请降低仓位谨慎操作。</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='risk-banner'>🚨 <b>市场风控预警：</b>当前大盘 VIX 恐慌指数升至 <b>{res['vix_val']:.1f}</b>，市场情绪剧烈波动！</div>", unsafe_allow_html=True)
             elif res["high_vol_flag"]:
-                st.markdown(f"<div class='risk-banner'>⚠️ 该标的近期波动率偏高（ATR ≈ {res['atr_pct']:.1f}% / 日），预测区间已相应放宽，请注意仓位控制。</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='risk-banner'>⚠️ 该标的近期波动率偏高（ATR ≈ {res['atr_pct']:.1f}% / 日），请注意仓位控制。</div>", unsafe_allow_html=True)
 
             col_left, col_right = st.columns([1, 1])
             with col_left:
@@ -590,34 +565,32 @@ with tab1:
                 st.write(f"• **建议买入关注区间:** `{res['entry']}`")
 
                 color_p = "#10B981" if res['target_pct'] >= 0 else "#EF4444"
-                st.write(f"• **{selected_horizon}预期目标价区间:** "
-                         f"<b style='color:{color_p};'>{res['target_low_pct']:+.1f}% ~ {res['target_high_pct']:+.1f}%</b> "
-                         f"（目标中枢 ${res['target']:.2f}）",
+                st.write(f"• **{selected_horizon}预期计算目标价:** "
+                         f"<b style='color:{color_p}; font-size:1.1rem;'>${res['target']:.2f}</b> "
+                         f"（涨跌幅预测: <b style='color:{color_p};'>{res['target_pct']:+.1f}%</b>）",
                          unsafe_allow_html=True)
 
-                # 增加清晰的卖出/止盈提示框
+                # 展示单一卖出/止盈提示框
                 st.markdown(f"<div class='exit-box'>{res['exit_strategy']}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='reason-box'>💡 {res['reason']}</div>", unsafe_allow_html=True)
 
                 if st.button("📌 记录本次预测以供复盘", key=f"log_{res['symbol']}"):
-                    log_prediction(res['symbol'], selected_horizon, res['price'], res['target_pct'],
-                                   res['target_low_pct'], res['target_high_pct'])
+                    log_prediction(res['symbol'], selected_horizon, res['price'], res['target_pct'], res['target'])
                     st.success("已记录，到期后可在「预测复盘」标签查看实际结果。")
 
                 st.markdown("</div>", unsafe_allow_html=True)
 
             with col_right:
                 st.markdown("<div class='terminal-card'>", unsafe_allow_html=True)
-                st.markdown("<div class='sub-caption'>🔬 多维因子归因分析（已按利好/利空分组）</div>", unsafe_allow_html=True)
+                st.markdown("<div class='sub-caption'>🔬 多维因子归因分析</div>", unsafe_allow_html=True)
                 render_grouped_signals(res['signals'])
                 st.markdown("</div>", unsafe_allow_html=True)
 
             with st.expander("📖 评分与预测方法说明"):
                 st.markdown(textwrap.dedent(f"""
                 - **评分**：{len(res['signals'])} 个技术/估值/VIX恐慌指数因子等权打分，每个利好 +5.5 分、利空 -5.5 分，以 50 分为中枢，5–95 分封顶。
-                - **预期收益率**：不是简单外推，而是「方向强度 × 历史波动率按 √时间 缩放 × VIX恐慌调节系数 × 0.55 折算 × 历史校准系数」，
-                  并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，避免出现脱离实际的极端数字。
-                - **止盈卖出逻辑**：设定了保守离场点（触及区间下限分批卖出）与极限离场点（触及上限全部卖出），实现利润最大化与风险可控。
+                - **计算目标价**：采用「方向强度 × 历史波动率按 √时间 缩放 × VIX恐慌调节系数 × 0.55 折算 × 历史校准系数」推算出极大概率结算价，
+                  并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，确保数据客观精确。
                 """))
         else:
             st.warning("未能获取该代码的有效数据，请检查代码是否正确或稍后重试。")
@@ -645,7 +618,7 @@ with tab2:
                 </div>
                 <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; background:#0A0D14; padding:12px; border-radius:6px; text-align:center; border:1px solid #1E2638;">
                     <div><div class="sub-caption">买入区间</div><b style="color:#FFF;">{item['entry']}</b></div>
-                    <div><div class="sub-caption">目标分批卖出价（止盈）</div><b style="color:{color_p};">${item['target_low']:.2f} ~${item['target_high']:.2f}</b></div>
+                    <div><div class="sub-caption">算出的目标卖出价</div><b style="color:{color_p}; font-size:1.05rem;">${item['target']:.2f} ({item['target_pct']:+.1f}%)</b></div>
                     <div><div class="sub-caption">参考止损离场价</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
                 </div>
                 <div class="reason-box" style="margin-top:12px;">💡 {item['reason']}</div>
@@ -677,7 +650,7 @@ with tab4:
         st.info("暂无历史预测记录。前往「动态因子诊断矩阵」标签，点击『记录本次预测』即可开始积累复盘数据。")
     else:
         show_df = log_df.copy()
-        for c in ["entry_price", "pred_pct", "target_low", "target_high", "actual_price", "actual_pct", "error_pct"]:
+        for c in ["entry_price", "pred_pct", "target_price", "actual_price", "actual_pct", "error_pct"]:
             if c in show_df.columns:
                 show_df[c] = pd.to_numeric(show_df[c], errors="coerce").round(2)
         st.dataframe(show_df.sort_values("logged_at", ascending=False), use_container_width=True, hide_index=True)
