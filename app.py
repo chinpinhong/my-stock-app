@@ -36,7 +36,7 @@ HORIZON_CAP_PCT = {"5-10天波段": 15.0, "3个月中线": 35.0}
 DAMPEN_FACTOR = 0.55
 
 # =============================================================================
-# 1. 视觉样式（输入框打字高亮青色 #00E5FF）
+# 1. 视觉样式（输入框背景设为白色，打字字体设为黑色 #000000）
 # =============================================================================
 st.markdown("""
 <style>
@@ -48,15 +48,15 @@ st.markdown("""
     }
     header, footer, #MainMenu { visibility: hidden; }
 
-    /* Input 输入框：打字字体高亮青色 #00E5FF */
+    /* Input 输入框：背景设为白色，打字字体改为黑色 #000000 */
     div[data-baseweb="input"] {
-        background-color: #131824 !important;
+        background-color: #FFFFFF !important;
         border: 1px solid #3B82F6 !important;
         border-radius: 8px !important;
-        color: #00E5FF !important;
+        color: #000000 !important;
     }
     input {
-        color: #00E5FF !important;
+        color: #000000 !important;
         background-color: transparent !important;
         font-weight: 600 !important;
         font-size: 1rem !important;
@@ -252,7 +252,7 @@ def fetch_vix_data():
             return val, change, pct
     except Exception:
         pass
-    return 18.5, 0.0, 0.0  # 默认平稳状态备用值
+    return 18.5, 0.0, 0.0
 
 @st.cache_data(ttl=600)
 def fetch_spy_returns():
@@ -419,7 +419,6 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         if np.isnan(vol_daily):
             vol_daily = 0.02
             
-        # VIX 影响：VIX 越高，预测的波动容忍区间拉得更大
         vix_multiplier = 1.0 + max(0, (vix_val - 20) / 40.0)
         
         direction = float(np.clip((score - 50) / 50, -1, 1))
