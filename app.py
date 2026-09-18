@@ -408,7 +408,7 @@ with tab2:
                 <h3>#{i+1} {item['symbol']} — ${item['price']:.2f}</h3>
                 <span class="tag-bull">{item['score']}分 | 建议仓位: {item['kelly_pos']:.1f}%</span>
             </div>
-            <p>🎯 目标价: <b>${item['target']:.2f} ({item['target_pct']:+.1f}\%)</b> \vert{} 🛑 止损位: <b>${item['stop']:.2f}</b></p>
+            <p>🎯 目标价: <b>${item['target']:.2f} ({item['target_pct']:+.1f}%)</b> | 🛑 止损位: <b>${item['stop']:.2f}</b></p>
         </div>
         """, unsafe_allow_html=True)
 
