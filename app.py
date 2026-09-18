@@ -36,7 +36,7 @@ HORIZON_CAP_PCT = {"5-10天波段": 15.0, "3个月中线": 35.0}
 DAMPEN_FACTOR = 0.55
 
 # =============================================================================
-# 1. 视觉样式（彻底消除白底刺眼，护眼温和微光暗色）
+# 1. 视觉样式（输入框打字高亮青色 #00E5FF）
 # =============================================================================
 st.markdown("""
 <style>
@@ -48,38 +48,40 @@ st.markdown("""
     }
     header, footer, #MainMenu { visibility: hidden; }
 
-    /* 修复所有原生 Input 输入框白底刺眼 */
+    /* Input 输入框：打字字体高亮青色 #00E5FF */
     div[data-baseweb="input"] {
         background-color: #131824 !important;
-        border: 1px solid #2A344B !important;
+        border: 1px solid #3B82F6 !important;
         border-radius: 8px !important;
-        color: #F8FAFC !important;
+        color: #00E5FF !important;
     }
     input {
-        color: #F8FAFC !important;
+        color: #00E5FF !important;
         background-color: transparent !important;
+        font-weight: 600 !important;
+        font-size: 1rem !important;
     }
 
-    /* 修复 Radio 单选框白底刺眼 */
+    /* 修复 Radio 单选框文字 */
     div[data-testid="stMarkdownContainer"] p {
         color: #CBD5E1 !important;
     }
     
-    /* 修复 Expander 折叠面板白底刺眼 */
+    /* 折叠面板 */
     div[data-testid="stExpander"] {
         background-color: #0F131D !important;
         border: 1px solid #1E2638 !important;
         border-radius: 10px !important;
     }
 
-    /* 修复各种 Notification 信息提示框 */
+    /* Notification 信息提示框 */
     div[data-testid="stNotification"] {
         background-color: #131824 !important;
         border: 1px solid #2A344B !important;
         color: #CBD5E1 !important;
     }
 
-    /* 卡片与组建容器 */
+    /* 卡片与组件容器 */
     .terminal-card { 
         background: linear-gradient(135deg, #131824, #0F131D);
         border: 1px solid #1E2638; 
@@ -119,7 +121,7 @@ st.markdown("""
     .api-badge { font-size:0.78rem; color:#64748B; background-color:#131824; border:1px solid #1E2638;
         padding:6px 14px; border-radius:20px; float:right; }
 
-    /* 修复表格的背景与高亮刺眼 */
+    /* 表格背景 */
     div[data-testid="stDataFrame"] { 
         background-color:#0F131D !important; 
         border:1px solid #1E2638 !important; 
@@ -127,7 +129,7 @@ st.markdown("""
         padding:4px !important; 
     }
     
-    /* 按钮样式强化 */
+    /* 按钮样式 */
     .stButton>button {
         background-color: #1E2638 !important;
         color: #E2E8F0 !important;
@@ -213,7 +215,7 @@ def get_calibration():
     return {"factor": factor, "n": len(settled), "win_rate": win_rate, "mae": mae}
 
 # =============================================================================
-# 3. 行情获取
+# 3. 行情与 VIX 恐慌指数获取
 # =============================================================================
 def fetch_quote_data(symbol):
     if FINNHUB_API_KEY and FINNHUB_API_KEY != "YOUR_FINNHUB_API_KEY_HERE":
@@ -237,6 +239,21 @@ def fetch_quote_data(symbol):
         pass
     return 100.0, 0.0, 0.0
 
+@st.cache_data(ttl=300)
+def fetch_vix_data():
+    """获取当天 CBOE VIX 恐慌指数"""
+    try:
+        vix = yf.Ticker("^VIX").history(period="2d")
+        if not vix.empty:
+            val = float(vix['Close'].iloc[-1])
+            prev = float(vix['Close'].iloc[-2]) if len(vix) > 1 else val
+            change = val - prev
+            pct = (change / prev) * 100
+            return val, change, pct
+    except Exception:
+        pass
+    return 18.5, 0.0, 0.0  # 默认平稳状态备用值
+
 @st.cache_data(ttl=600)
 def fetch_spy_returns():
     try:
@@ -259,7 +276,16 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             return None
 
         price, change, pct = fetch_quote_data(symbol)
+        vix_val, vix_change, vix_pct = fetch_vix_data()
         signals = []
+
+        # --- VIX 恐慌指数因子 ---
+        if vix_val >= 30:
+            signals.append({"factor": "市场恐慌指数 (VIX)", "light": "🔴 利空", "desc": f"VIX={vix_val:.1f}（市场极度恐慌）", "w": -1})
+        elif vix_val >= 20:
+            signals.append({"factor": "市场恐慌指数 (VIX)", "light": "🟡 中性", "desc": f"VIX={vix_val:.1f}（情绪偏谨慎）", "w": 0})
+        else:
+            signals.append({"factor": "市场恐慌指数 (VIX)", "light": "🟢 利好", "desc": f"VIX={vix_val:.1f}（情绪平稳）", "w": 1})
 
         # --- PE 估值 ---
         info = ticker.info if hasattr(ticker, 'info') else {}
@@ -371,11 +397,11 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         ], axis=1).max(axis=1)
         atr = tr.rolling(14).mean().iloc[-1]
         atr_pct = (atr / price * 100) if price else 0.0
-        high_vol_flag = atr_pct > 5.0
+        high_vol_flag = atr_pct > 5.0 or vix_val >= 25.0
 
         # --- 综合评分 ---
         raw_sum = sum(s["w"] for s in signals)
-        score = int(np.clip(50 + raw_sum * 6, 5, 95))
+        score = int(np.clip(50 + raw_sum * 5.5, 5, 95))
 
         if score >= 80:
             rating, cmd = "AAAA 强力关注", "🟢 信号偏多"
@@ -392,9 +418,13 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         vol_daily = df['Close'].pct_change().dropna().tail(30).std()
         if np.isnan(vol_daily):
             vol_daily = 0.02
+            
+        # VIX 影响：VIX 越高，预测的波动容忍区间拉得更大
+        vix_multiplier = 1.0 + max(0, (vix_val - 20) / 40.0)
+        
         direction = float(np.clip((score - 50) / 50, -1, 1))
         calib = get_calibration()
-        horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100
+        horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100 * vix_multiplier
         exp_pct = direction * horizon_vol_pct * DAMPEN_FACTOR * calib["factor"]
         exp_pct = float(np.clip(exp_pct, -cap, cap))
         
@@ -426,7 +456,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             "target_low": target_low, "target_high": target_high,
             "target_low_pct": target_low_pct, "target_high_pct": target_high_pct,
             "stop": stop, "atr_pct": atr_pct, "high_vol_flag": high_vol_flag,
-            "signals": signals, "reason": reason, "calib": calib,
+            "signals": signals, "reason": reason, "calib": calib, "vix_val": vix_val
         }
     except Exception:
         return None
@@ -450,6 +480,8 @@ if len(trade_logs) > 0:
 else:
     win_rate, net_pnl, roi = 0, 0.0, 0.0
 
+vix_val, vix_change, vix_pct = fetch_vix_data()
+
 # =============================================================================
 # 6. 界面渲染
 # =============================================================================
@@ -462,9 +494,12 @@ with col_q:
 st.caption("⚠️ 本工具基于公开技术指标生成的量化参考信号，仅供研究学习使用，不构成投资建议；预测区间已做统计学合理化处理，仍可能出现较大偏差。")
 st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
-col_time, c_win, c_pnl, c_cap = st.columns([1.3, 1, 1, 1])
+col_time, c_vix, c_win, c_pnl, c_cap = st.columns([1.2, 1, 1, 1, 1])
 with col_time:
     selected_horizon = st.radio("⏱️ 策略执行时间周期:", list(HORIZON_DAYS.keys()), horizontal=True)
+with c_vix:
+    vix_color = "#EF4444" if vix_val >= 25 else ("#F59E0B" if vix_val >= 20 else "#10B981")
+    st.metric("VIX 恐慌指数", f"{vix_val:.2f}", delta=f"{vix_pct:+.2f}%", delta_color="inverse")
 with c_win:
     st.metric("实盘策略胜率", f"{win_rate}%", delta="从零计算")
 with c_pnl:
@@ -515,7 +550,9 @@ with tab1:
         if res:
             st.markdown(f"#### 📌 {res['symbol']} 深度量化报告")
 
-            if res["high_vol_flag"]:
+            if res["vix_val"] >= 25:
+                st.markdown(f"<div class='risk-banner'>🚨 <b>市场风控预警：</b>当前大盘 VIX 恐慌指数升至 <b>{res['vix_val']:.1f}</b>，市场情绪剧烈波动！预测区间已自动调宽，请降低仓位谨慎操作。</div>", unsafe_allow_html=True)
+            elif res["high_vol_flag"]:
                 st.markdown(f"<div class='risk-banner'>⚠️ 该标的近期波动率偏高（ATR ≈ {res['atr_pct']:.1f}% / 日），预测区间已相应放宽，请注意仓位控制。</div>", unsafe_allow_html=True)
 
             col_left, col_right = st.columns([1, 1])
@@ -555,8 +592,8 @@ with tab1:
 
             with st.expander("📖 评分与预测方法说明"):
                 st.markdown(textwrap.dedent(f"""
-                - **评分**：{len(res['signals'])} 个技术/估值/相对强弱因子等权打分，每个利好 +6 分、利空 -6 分，以 50 分为中枢，5–95 分封顶。
-                - **预期收益率**：不是简单外推，而是「方向强度 × 历史波动率按 √时间 缩放 × 0.55 折算 × 历史校准系数」，
+                - **评分**：{len(res['signals'])} 个技术/估值/VIX恐慌指数因子等权打分，每个利好 +5.5 分、利空 -5.5 分，以 50 分为中枢，5–95 分封顶。
+                - **预期收益率**：不是简单外推，而是「方向强度 × 历史波动率按 √时间 缩放 × VIX恐慌调节系数 × 0.55 折算 × 历史校准系数」，
                   并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，避免出现脱离实际的极端数字。
                 - **历史校准系数**：当前为 **{res['calib']['factor']:.2f}**（基于 {res['calib']['n']} 条已到期的历史预测计算，
                   样本不足 3 条时默认 1.0）。如果过去的预测持续偏乐观，这个系数会自动变小，让未来的预测更保守。
