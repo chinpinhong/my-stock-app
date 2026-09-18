@@ -117,6 +117,8 @@ st.markdown("""
         border-radius:8px; padding:10px 14px; font-size:0.85rem; color:#FBBF24; margin-bottom:12px; }
     .reason-box { background: rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.25);
         border-radius:8px; padding:12px 14px; font-size:0.88rem; color:#93C5FD; margin-top:10px; }
+    .exit-box { background: rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25);
+        border-radius:8px; padding:12px 14px; font-size:0.88rem; color:#A7F3D0; margin-top:10px; }
 
     .api-badge { font-size:0.78rem; color:#64748B; background-color:#131824; border:1px solid #1E2638;
         padding:6px 14px; border-radius:20px; float:right; }
@@ -434,7 +436,26 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         target_low = price * (1 + target_low_pct / 100.0)
         target_high = price * (1 + target_high_pct / 100.0)
 
+        # 止损位计算
         stop = price - 1.5 * atr if score >= 50 else price + 1.5 * atr
+
+        # 止盈离场逻辑（卖出信号判断）
+        take_profit_1 = target_low
+        take_profit_2 = target_high
+        
+        if score >= 50:
+            exit_strategy = (
+                f"🎯 <b>止盈（卖出）策略：</b><br>"
+                f"• <b>保守止盈卖出价：</b> `${take_profit_1:.2f}` ({target_low_pct:+.1f}%) —— 触及建议先卖出 50% 锁定利润。<br>"
+                f"• <b>极限止盈卖出价：</b> `${take_profit_2:.2f}` ({target_high_pct:+.1f}%) —— 触及建议清仓离场。<br>"
+                f"🛑 <b>止损卖出价：</b> `${stop:.2f}` —— 若跌破此价格无条件止损卖出离场。"
+            )
+        else:
+            exit_strategy = (
+                f"⚠️ <b>当前属于弱势/偏空标的，建议卖出离场：</b><br>"
+                f"• 建议在 `${price:.2f}` 附近减仓或平仓；<br>"
+                f"• 强止损反弹位： `${stop:.2f}`（向上突破则止损空单/清仓）。"
+            )
 
         bull_factors = [s for s in signals if s["w"] == 1]
         bear_factors = [s for s in signals if s["w"] == -1]
@@ -454,7 +475,8 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             "target": target_price, "target_pct": exp_pct,
             "target_low": target_low, "target_high": target_high,
             "target_low_pct": target_low_pct, "target_high_pct": target_high_pct,
-            "stop": stop, "atr_pct": atr_pct, "high_vol_flag": high_vol_flag,
+            "stop": stop, "exit_strategy": exit_strategy,
+            "atr_pct": atr_pct, "high_vol_flag": high_vol_flag,
             "signals": signals, "reason": reason, "calib": calib, "vix_val": vix_val
         }
     except Exception:
@@ -565,15 +587,16 @@ with tab1:
                 tag_class = "tag-bull" if res['score'] >= 65 else ("tag-neutral" if res['score'] >= 40 else "tag-bear")
                 st.write(f"• **综合评级:** <span class='{tag_class}'>{res['score']}分 — {res['rating']}</span>", unsafe_allow_html=True)
                 st.write(f"• **量化决策建议:** {res['cmd']}")
-                st.write(f"• **建议关注区间:** `{res['entry']}`")
+                st.write(f"• **建议买入关注区间:** `{res['entry']}`")
 
                 color_p = "#10B981" if res['target_pct'] >= 0 else "#EF4444"
-                st.write(f"• **{selected_horizon}预期区间:** "
+                st.write(f"• **{selected_horizon}预期目标价区间:** "
                          f"<b style='color:{color_p};'>{res['target_low_pct']:+.1f}% ~ {res['target_high_pct']:+.1f}%</b> "
-                         f"（中枢 ${res['target']:.2f}，区间 ${res['target_low']:.2f} ~${res['target_high']:.2f}）",
+                         f"（目标中枢 ${res['target']:.2f}）",
                          unsafe_allow_html=True)
-                st.write(f"• **参考止损位（1.5×ATR）:** `${res['stop']:.2f}`")
 
+                # 增加清晰的卖出/止盈提示框
+                st.markdown(f"<div class='exit-box'>{res['exit_strategy']}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='reason-box'>💡 {res['reason']}</div>", unsafe_allow_html=True)
 
                 if st.button("📌 记录本次预测以供复盘", key=f"log_{res['symbol']}"):
@@ -594,8 +617,7 @@ with tab1:
                 - **评分**：{len(res['signals'])} 个技术/估值/VIX恐慌指数因子等权打分，每个利好 +5.5 分、利空 -5.5 分，以 50 分为中枢，5–95 分封顶。
                 - **预期收益率**：不是简单外推，而是「方向强度 × 历史波动率按 √时间 缩放 × VIX恐慌调节系数 × 0.55 折算 × 历史校准系数」，
                   并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，避免出现脱离实际的极端数字。
-                - **历史校准系数**：当前为 **{res['calib']['factor']:.2f}**（基于 {res['calib']['n']} 条已到期的历史预测计算，
-                  样本不足 3 条时默认 1.0）。如果过去的预测持续偏乐观，这个系数会自动变小，让未来的预测更保守。
+                - **止盈卖出逻辑**：设定了保守离场点（触及区间下限分批卖出）与极限离场点（触及上限全部卖出），实现利润最大化与风险可控。
                 """))
         else:
             st.warning("未能获取该代码的有效数据，请检查代码是否正确或稍后重试。")
@@ -603,7 +625,7 @@ with tab1:
 # ---- Tab 2: Top 3 ----
 with tab2:
     st.subheader(f"🔥 今日阿尔法关注榜单 ({selected_horizon})")
-    st.caption("基于同一套量化因子对股票池打分，列出综合评分最高的 3 只，并给出入选理由。")
+    st.caption("基于同一套量化因子对股票池打分，列出综合评分最高的 3 只，并给出入选及离场理由。")
 
     pool = ["NVDA", "AAPL", "TSLA", "MBLY", "AMD", "META", "MSFT", "AMZN"]
     results = [r for s in pool if (r := quant_evaluate_stock(s, horizon=selected_horizon))]
@@ -622,9 +644,9 @@ with tab2:
                     <span class="{t_class}">{item['score']}分 | {item['rating']}</span>
                 </div>
                 <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; background:#0A0D14; padding:12px; border-radius:6px; text-align:center; border:1px solid #1E2638;">
-                    <div><div class="sub-caption">关注区间</div><b style="color:#FFF;">{item['entry']}</b></div>
-                    <div><div class="sub-caption">{selected_horizon}预期区间</div><b style="color:{color_p};">{item['target_low_pct']:+.1f}% ~ {item['target_high_pct']:+.1f}%</b></div>
-                    <div><div class="sub-caption">参考止损</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
+                    <div><div class="sub-caption">买入区间</div><b style="color:#FFF;">{item['entry']}</b></div>
+                    <div><div class="sub-caption">目标分批卖出价（止盈）</div><b style="color:{color_p};">${item['target_low']:.2f} ~${item['target_high']:.2f}</b></div>
+                    <div><div class="sub-caption">参考止损离场价</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
                 </div>
                 <div class="reason-box" style="margin-top:12px;">💡 {item['reason']}</div>
             </div>
@@ -642,8 +664,7 @@ with tab3:
 # ---- Tab 4: 预测复盘 & 自我校准 ----
 with tab4:
     st.subheader("🧠 预测复盘 & 自我校准")
-    st.caption("说明：这不是黑箱式的『自动学习』，而是一个透明的反馈环 —— 系统记录每次预测，到期后自动对比真实价格，"
-               "用历史误差算出一个校准系数，用于给未来的预测幅度降温或修正。")
+    st.caption("说明：记录每次预测，到期后自动对比真实价格，用历史误差算出一个校准系数，用于给未来的预测幅度降温或修正。")
 
     calib = get_calibration()
     c1, c2, c3 = st.columns(3)
