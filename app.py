@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-FINNHUB_API_KEY = "YOUR_FINNHUB_API_KEY_HERE"
+FINNHUB_API_KEY = "damh04pr01qvokas3l80damh04pr01qvokas3l8g"
 
 # 初始化 API 调用计数器 (每日上限 60 次)
 if 'api_call_count' not in st.session_state:
