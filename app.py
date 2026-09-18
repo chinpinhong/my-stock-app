@@ -32,8 +32,13 @@ PRED_COLUMNS = ["logged_at", "symbol", "horizon", "entry_price", "pred_pct",
 
 HORIZON_DAYS = {"5-10天波段": 7, "3个月中线": 63}
 HORIZON_CALENDAR_DAYS = {"5-10天波段": 8, "3个月中线": 95}
-HORIZON_CAP_PCT = {"5-10天波段": 15.0, "3个月中线": 35.0}
-DAMPEN_FACTOR = 0.55
+HORIZON_CAP_PCT = {"5-10天波段": 20.0, "3个月中线": 45.0}
+
+# 提高灵敏度系数，不让预测目标过大幅度打折
+HORIZON_DAMPEN = {
+    "5-10天波段": 0.85, 
+    "3个月中线": 0.65
+}
 
 # =============================================================================
 # 1. 视觉样式
@@ -199,7 +204,7 @@ def get_calibration():
     if len(settled) < 3:
         return {"factor": 1.0, "n": len(settled), "win_rate": None, "mae": None}
     ratio = (settled["actual_pct"].abs() / settled["pred_pct"].abs().replace(0, np.nan)).dropna()
-    factor = float(np.clip(ratio.median(), 0.3, 1.3)) if len(ratio) > 0 else 1.0
+    factor = float(np.clip(ratio.median(), 0.5, 1.3)) if len(ratio) > 0 else 1.0
     win_rate = float(settled["direction_hit"].mean() * 100) if "direction_hit" in settled else None
     mae = float((settled["actual_pct"] - settled["pred_pct"]).abs().mean())
     return {"factor": factor, "n": len(settled), "win_rate": win_rate, "mae": mae}
@@ -401,37 +406,44 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         else:
             rating, cmd = "A 偏空避险", "🔴 建议规避/减仓"
 
-        # --- 单一确定目标价计算 ---
+        # --- 5%+ 实盘波段目标价计算引擎 ---
         horizon_days = HORIZON_DAYS[horizon]
         cap = HORIZON_CAP_PCT[horizon]
-        vol_daily = df['Close'].pct_change().dropna().tail(30).std()
-        if np.isnan(vol_daily):
-            vol_daily = 0.02
-            
-        vix_multiplier = 1.0 + max(0, (vix_val - 20) / 40.0)
-        direction = float(np.clip((score - 50) / 50, -1, 1))
-        calib = get_calibration()
-        horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100 * vix_multiplier
-        exp_pct = direction * horizon_vol_pct * DAMPEN_FACTOR * calib["factor"]
-        exp_pct = float(np.clip(exp_pct, -cap, cap))
         
-        # 计算单一极大概率目标价
+        # 多空映射调整：降低映射死角，放大得分差
+        direction = float(np.clip((score - 50) / 30.0, -1.0, 1.0))
+        calib = get_calibration()
+        
+        if horizon == "5-10天波段":
+            # 5-10天波段：结合 2.2 倍 ATR 的实际真实波幅进行映射，贴近 5%~12% 实盘波段区间
+            atr_target_pct = (atr * 2.2 / price) * 100
+            exp_pct = direction * atr_target_pct * HORIZON_DAMPEN[horizon] * calib["factor"]
+        else:
+            # 3个月中线：结合年化波动率按 sqrt(时间) 缩放
+            vol_daily = df['Close'].pct_change().dropna().tail(30).std()
+            if np.isnan(vol_daily): vol_daily = 0.025
+            vix_multiplier = 1.0 + max(0, (vix_val - 20) / 40.0)
+            horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100 * vix_multiplier
+            exp_pct = direction * horizon_vol_pct * HORIZON_DAMPEN[horizon] * calib["factor"]
+        
+        # 限制硬性上下限
+        exp_pct = float(np.clip(exp_pct, -cap, cap))
         target_price = price * (1 + exp_pct / 100.0)
 
-        # 止损位计算
+        # 止损位计算 (根据分值动态止损)
         stop = price - 1.5 * atr if score >= 50 else price + 1.5 * atr
 
-        # 单一止盈/清仓策略
+        # 策略描述
         if score >= 50:
             exit_strategy = (
-                f"🎯 <b>计算止盈卖出价（确定值）：</b> `${target_price:.2f}` ({exp_pct:+.1f}%)<br>"
-                f"• <b>策略建议：</b> 触及此价格时建议全部止盈清仓落袋为安。<br>"
+                f"🎯 <b>计算止盈卖出价（确定值）：</b> `${target_price:.2f}` ({exp_pct:+.1f}%)\n"
+                f"• <b>策略建议：</b> 触及此价格时建议全部止盈清仓落袋为安。\n"
                 f"🛑 <b>参考止损卖出价：</b> `${stop:.2f}` —— 跌破无条件止损。"
             )
         else:
             exit_strategy = (
-                f"⚠️ <b>当前处于偏空或弱势，建议直接平仓离场：</b><br>"
-                f"• 推荐离场参考价： `${price:.2f}`<br>"
+                f"⚠️ <b>当前处于偏空或弱势，建议直接平仓离场：</b>\n"
+                f"• 推荐离场参考价： `${price:.2f}`\n"
                 f"• 空单止损反弹位： `${stop:.2f}`"
             )
 
@@ -567,10 +579,9 @@ with tab1:
                 color_p = "#10B981" if res['target_pct'] >= 0 else "#EF4444"
                 st.write(f"• **{selected_horizon}预期计算目标价:** "
                          f"<b style='color:{color_p}; font-size:1.1rem;'>${res['target']:.2f}</b> "
-                         f"（涨跌幅预测: <b style='color:{color_p};'>{res['target_pct']:+.1f}%</b>）",
+                         f"（预期涨跌: <b style='color:{color_p};'>{res['target_pct']:+.1f}%</b>）",
                          unsafe_allow_html=True)
 
-                # 展示单一卖出/止盈提示框
                 st.markdown(f"<div class='exit-box'>{res['exit_strategy']}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='reason-box'>💡 {res['reason']}</div>", unsafe_allow_html=True)
 
@@ -589,42 +600,53 @@ with tab1:
             with st.expander("📖 评分与预测方法说明"):
                 st.markdown(textwrap.dedent(f"""
                 - **评分**：{len(res['signals'])} 个技术/估值/VIX恐慌指数因子等权打分，每个利好 +5.5 分、利空 -5.5 分，以 50 分为中枢，5–95 分封顶。
-                - **计算目标价**：采用「方向强度 × 历史波动率按 √时间 缩放 × VIX恐慌调节系数 × 0.55 折算 × 历史校准系数」推算出极大概率结算价，
-                  并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，确保数据客观精确。
+                - **计算目标价**：采用「真实波幅 ATR × 方向强度 × 灵敏度因子 × 历史校准系数」计算出极大概率结算价，
+                  并硬性封顶在 ±{HORIZON_CAP_PCT[selected_horizon]:.0f}%，确保波段盈利收益率符合实盘要求。
                 """))
         else:
             st.warning("未能获取该代码的有效数据，请检查代码是否正确或稍后重试。")
 
-# ---- Tab 2: Top 3 ----
+# ---- Tab 2: Top 3 筛选 ----
 with tab2:
-    st.subheader(f"🔥 今日阿尔法关注榜单 ({selected_horizon})")
-    st.caption("基于同一套量化因子对股票池打分，列出综合评分最高的 3 只，并给出入选及离场理由。")
+    st.subheader(f"🔥 最佳阿尔法波段标的 Top 3 ({selected_horizon})")
+    st.caption("筛选条件：多维评分前列，且预测盈利预期 ≥ 5.0% 的优质动能标的。")
 
-    pool = ["NVDA", "AAPL", "TSLA", "MBLY", "AMD", "META", "MSFT", "AMZN"]
-    results = [r for s in pool if (r := quant_evaluate_stock(s, horizon=selected_horizon))]
-    top3 = sorted(results, key=lambda x: x["score"], reverse=True)[:3]
+    # 扩展核心高流动性关注池，提升筛选质量
+    pool = ["NVDA", "AAPL", "TSLA", "MBLY", "AMD", "META", "MSFT", "AMZN", "GOOGL", "AVGO", "PLTR", "SMCI"]
+    
+    # 诊断整个池子
+    all_results = [r for s in pool if (r := quant_evaluate_stock(s, horizon=selected_horizon))]
+    
+    # 过滤筛选：只要目标预期涨幅 >= 5.0% 的做多标的
+    eligible = [r for r in all_results if r["target_pct"] >= 5.0]
+    
+    # 按综合得分从高到低排序，取最优质的前 3 个
+    top3 = sorted(eligible, key=lambda x: (x["score"], x["target_pct"]), reverse=True)[:3]
 
-    for i, item in enumerate(top3):
-        t_class = "tag-bull" if item['score'] >= 65 else ("tag-neutral" if item['score'] >= 40 else "tag-bear")
-        color_p = "#10B981" if item['target_pct'] >= 0 else "#EF4444"
-        card_html = textwrap.dedent(f"""
-            <div class="terminal-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div>
-                        <span style="font-size:1.2rem; font-weight:bold; color:#FFF;">#{i+1} {item['symbol']}</span>
-                        <span style="color:#64748B; font-size:0.85rem; margin-left:10px;">现价: ${item['price']:.2f}</span>
+    if not top3:
+        st.info("⚠️ 当前市场环境或股票池中暂未筛选出预期涨幅 ≥ 5% 的高胜率标的，建议保持观望。")
+    else:
+        for i, item in enumerate(top3):
+            t_class = "tag-bull" if item['score'] >= 65 else ("tag-neutral" if item['score'] >= 40 else "tag-bear")
+            color_p = "#10B981" if item['target_pct'] >= 0 else "#EF4444"
+            card_html = textwrap.dedent(f"""
+                <div class="terminal-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <div>
+                            <span style="font-size:1.2rem; font-weight:bold; color:#FFF;">#{i+1} {item['symbol']}</span>
+                            <span style="color:#64748B; font-size:0.85rem; margin-left:10px;">现价: ${item['price']:.2f}</span>
+                        </div>
+                        <span class="{t_class}">{item['score']}分 | {item['rating']}</span>
                     </div>
-                    <span class="{t_class}">{item['score']}分 | {item['rating']}</span>
+                    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; background:#0A0D14; padding:12px; border-radius:6px; text-align:center; border:1px solid #1E2638;">
+                        <div><div class="sub-caption">建议买入位</div><b style="color:#FFF;">{item['entry']}</b></div>
+                        <div><div class="sub-caption">计算目标价 (涨幅)</div><b style="color:{color_p}; font-size:1.05rem;">${item['target']:.2f} ({item['target_pct']:+.1f}%)</b></div>
+                        <div><div class="sub-caption">参考止损离场价</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
+                    </div>
+                    <div class="reason-box" style="margin-top:12px;">💡 {item['reason']}</div>
                 </div>
-                <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; background:#0A0D14; padding:12px; border-radius:6px; text-align:center; border:1px solid #1E2638;">
-                    <div><div class="sub-caption">买入区间</div><b style="color:#FFF;">{item['entry']}</b></div>
-                    <div><div class="sub-caption">算出的目标卖出价</div><b style="color:{color_p}; font-size:1.05rem;">${item['target']:.2f} ({item['target_pct']:+.1f}%)</b></div>
-                    <div><div class="sub-caption">参考止损离场价</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
-                </div>
-                <div class="reason-box" style="margin-top:12px;">💡 {item['reason']}</div>
-            </div>
-        """).strip()
-        st.markdown(card_html, unsafe_allow_html=True)
+            """).strip()
+            st.markdown(card_html, unsafe_allow_html=True)
 
 # ---- Tab 3: 实盘日志 ----
 with tab3:
@@ -654,3 +676,4 @@ with tab4:
             if c in show_df.columns:
                 show_df[c] = pd.to_numeric(show_df[c], errors="coerce").round(2)
         st.dataframe(show_df.sort_values("logged_at", ascending=False), use_container_width=True, hide_index=True)
+            
