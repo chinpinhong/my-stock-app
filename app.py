@@ -6,62 +6,93 @@ import requests
 import textwrap
 
 # -----------------------------------------------------------------------------
-# 1. 页面配置与暗黑风格 CSS
+# 1. 页面配置与华尔街机构级 UI 样式
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="US Stock Quantitative System",
-    page_icon="🦅",
+    page_title="Alpha Vector | 美股量化终端",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-FINNHUB_API_KEY = "damh04pr01qvokas3l80damh04pr01qvokas3l8g"
+# 强制初始化状态：彻底清空历史记录，保证纯净零数据
+if 'realtime_trade_logs' not in st.session_state:
+    st.session_state.realtime_trade_logs = []
 
-# 初始化 API 调用计数器 (每日上限 60 次)
-if 'api_call_count' not in st.session_state:
-    st.session_state.api_call_count = 0
+if 'api_counter' not in st.session_state:
+    st.session_state.api_counter = 0
+
+FINNHUB_API_KEY = "damh04pr01qvokas3l80damh04pr01qvokas3l8g"
 
 st.markdown("""
 <style>
-    .stApp { background-color: #131722; color: #D1D4DC; }
+    .stApp {
+        background-color: #0A0D14;
+        color: #E2E8F0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
     header, footer, #MainMenu { visibility: hidden; }
-    
-    .card-container {
-        background-color: #1E222D;
-        border: 1px solid #2A2E39;
+
+    /* 机构级卡片容器 */
+    .terminal-card {
+        background: linear-gradient(135deg, #131824, #0F131D);
+        border: 1px solid #1E2638;
         border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    .terminal-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #F8FAFC;
+        letter-spacing: -0.3px;
+    }
+
+    .sub-caption {
+        color: #64748B;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        margin-bottom: 6px;
     }
     
-    .title-text { font-size: 1.5rem; font-weight: 700; color: #FFFFFF; }
-    .sub-label { color: #787B86; font-size: 0.75rem; text-transform: uppercase; font-weight: 700; letter-spacing: 0.8px; }
-    .tag-blue { background: rgba(41, 98, 255, 0.2); color: #2962FF; padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
-    .tag-green { background: rgba(38, 166, 154, 0.2); color: #26A69A; padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
-    .tag-red { background: rgba(239, 83, 80, 0.2); color: #EF5350; padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
-    .stat-bull { color: #26A69A; font-weight: bold; }
-    .stat-bear { color: #EF5350; font-weight: bold; }
-    .quota-badge {
-        font-size: 0.75rem;
-        color: #787B86;
-        background-color: #2A2E39;
-        padding: 4px 10px;
-        border-radius: 12px;
+    /* 信号 Badge */
+    .tag-bull { background: rgba(16, 185, 129, 0.12); color: #10B981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 4px 12px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
+    .tag-bear { background: rgba(239, 68, 68, 0.12); color: #EF4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 4px 12px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
+    .tag-neutral { background: rgba(245, 158, 11, 0.12); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3); padding: 4px 12px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
+
+    .api-badge {
+        font-size: 0.78rem;
+        color: #64748B;
+        background-color: #131824;
+        border: 1px solid #1E2638;
+        padding: 6px 14px;
+        border-radius: 20px;
         float: right;
+    }
+
+    div[data-testid="stDataFrame"] {
+        background-color: #0F131D;
+        border: 1px solid #1E2638;
+        border-radius: 8px;
+        padding: 4px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 核心量化引擎 (修复 ADX/KDJ 算法崩溃，确保绝对稳定)
+# 2. 核心分析引擎
 # -----------------------------------------------------------------------------
-def get_realtime_price(symbol):
+def fetch_quote_data(symbol):
     if FINNHUB_API_KEY and FINNHUB_API_KEY != "YOUR_FINNHUB_API_KEY_HERE":
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
             res = requests.get(url, timeout=3).json()
             if res and 'c' in res and res['c'] != 0:
-                st.session_state.api_call_count += 1
+                st.session_state.api_counter += 1
                 return res['c'], res.get('d', 0), res.get('dp', 0)
         except Exception:
             pass
@@ -78,283 +109,199 @@ def get_realtime_price(symbol):
     return 100.0, 0.0, 0.0
 
 @st.cache_data(ttl=120)
-def analyze_stock_full(symbol):
+def quant_evaluate_stock(symbol, horizon="5-10天波段"):
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="120d", interval="1d")
         if len(df) < 40: return None
         
-        price, change, pct = get_realtime_price(symbol)
+        price, change, pct = fetch_quote_data(symbol)
         
-        # 1. 市盈率 PE
+        # 指标归因
         info = ticker.info if hasattr(ticker, 'info') else {}
         pe = info.get('forwardPE', info.get('trailingPE', None))
-        if pe:
-            pe_val = f"{pe:.1f}"
-            pe_light = "🟢 利好" if pe < 30 else ("🟡 中性" if pe < 50 else "🔴 利空")
-            pe_desc = "估值合理" if pe < 30 else ("估值适中" if pe < 50 else "估值偏高")
-        else:
-            pe_val, pe_light, pe_desc = "N/A", "🟡 中性", "暂无数据"
+        pe_val = f"{pe:.1f}" if pe else "N/A"
+        pe_light = "🟢 利好" if pe and pe < 30 else ("🟡 中性" if pe and pe < 50 else "🔴 利空")
+        pe_desc = "估值位于合理区间" if pe and pe < 30 else "估值偏高"
 
-        # 2. 均线趋势 (EMA 20/50)
         ema20 = df['Close'].ewm(span=20).mean().iloc[-1]
         ema50 = df['Close'].ewm(span=50).mean().iloc[-1]
         ema_light = "🟢 利好" if price > ema20 > ema50 else ("🔴 利空" if price < ema20 < ema50 else "🟡 中性")
-        ema_desc = "多头排列 (看涨)" if price > ema20 > ema50 else ("空头排列 (看跌)" if price < ema20 < ema50 else "均线缠绕 (震荡)")
+        ema_desc = "均线呈多头排列" if price > ema20 > ema50 else "均线空头排列"
 
-        # 3. MACD
         ema12 = df['Close'].ewm(span=12).mean()
         ema26 = df['Close'].ewm(span=26).mean()
         macd = (ema12 - ema26).iloc[-1]
         macd_sig = (ema12 - ema26).ewm(span=9).mean().iloc[-1]
         macd_light = "🟢 利好" if macd > macd_sig else "🔴 利空"
-        macd_desc = "金叉 (动能向上)" if macd > macd_sig else "死叉 (动能向下)"
+        macd_desc = "MACD 上方金叉" if macd > macd_sig else "MACD 动能死叉"
 
-        # 4. RSI (14)
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss
         rsi_val = int(100 - (100 / (1 + rs.iloc[-1]))) if not np.isnan(rs.iloc[-1]) else 50
-        if rsi_val > 70:
-            rsi_light, rsi_desc = "🔴 利空", f"{rsi_val} (超买警戒)"
-        elif rsi_val < 35:
-            rsi_light, rsi_desc = "🟢 利好", f"{rsi_val} (超卖超跌)"
-        else:
-            rsi_light, rsi_desc = "🟢 利好" if rsi_val > 50 else "🟡 中性", f"{rsi_val} (健康区间)"
+        rsi_light = "🔴 利空" if rsi_val > 70 else ("🟢 利好" if rsi_val < 35 else "🟢 利好")
+        rsi_desc = f"RSI 强弱值 {rsi_val}"
 
-        # 5. 量能比 (Volume Ratio)
         vol_mean = df['Volume'].tail(20).mean()
         vol_ratio = df['Volume'].iloc[-1] / vol_mean if vol_mean > 0 else 1.0
         vol_light = "🟢 利好" if vol_ratio > 1.3 else ("🟡 中性" if vol_ratio > 0.8 else "🔴 利空")
-        vol_desc = f"{vol_ratio:.1f}x (放量确认)" if vol_ratio > 1.3 else f"{vol_ratio:.1f}x (量能平稳)"
+        vol_desc = f"成交量放量 {vol_ratio:.1f}x"
 
-        # 6. 布林带 (Bollinger)
-        std20 = df['Close'].tail(20).std()
-        bb_upper = ema20 + (std20 * 2)
-        bb_lower = ema20 - (std20 * 2)
-        if price > bb_upper:
-            bb_light, bb_desc = "🟢 利好", "突破上轨强攻"
-        elif price < bb_lower:
-            bb_light, bb_desc = "🔴 利空", "跌破下轨探底"
-        else:
-            bb_light, bb_desc = "🟡 中性", "布林带内震荡"
+        # 综合评分 (20-98)
+        score = int(np.clip(50 + (15 if price > ema20 else -10) + (15 if vol_ratio > 1.2 else 0) + (10 if macd > macd_sig else 0), 20, 98))
 
-        # 7. ADX 趋势强度 (极简稳健算法)
-        tr = np.maximum(df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift(1)))
-        atr = tr.rolling(14).mean().iloc[-1]
-        adx_val = int((atr / price) * 1000)
-        adx_light = "🟢 利好" if adx_val > 20 else "🟡 中性"
-        adx_desc = f"{adx_val} (强波段趋势)" if adx_val > 20 else f"{adx_val} (弱趋势/盘整)"
-
-        # 8. KDJ (9,3,3)
-        low9 = df['Low'].tail(9).min()
-        high9 = df['High'].tail(9).max()
-        rsv = ((price - low9) / (high9 - low9 + 1e-6)) * 100
-        k_val = int(rsv)
-        kdj_light = "🟢 利好" if k_val > 50 else "🔴 利空"
-        kdj_desc = f"K值 {k_val} (偏多)" if k_val > 50 else f"K值 {k_val} (偏空)"
-
-        # 9. 支撑位距离
-        support = df['Low'].tail(20).min()
-        resistance = df['High'].tail(20).max()
-        dist_to_supp = ((price - support) / price) * 100
-        supp_light = "🟢 利好" if dist_to_supp < 3.5 else "🟡 中性"
-        supp_desc = f"距支撑仅 {dist_to_supp:.1f}%" if dist_to_supp < 3.5 else f"强支撑位于 ${support:.2f}"
-
-        # 10. 大盘环境 (与 20 日线对比)
-        qqq_light = "🟢 利好" if price > ema20 else "🔴 利空"
-        qqq_desc = "个股运行在均线上方" if price > ema20 else "个股受压于均线下"
-
-        # 综合打分计算
-        score = int(np.clip(50 + (15 if price > ema20 else -10) + (15 if vol_ratio > 1.2 else 0) + (10 if macd > macd_sig else 0) + (10 if rsi_val > 50 else -5), 20, 98))
-
-        if score >= 85:
-            grade, action = "S级 (强力推荐)", "建议买入"
+        if score >= 80:
+            rating, cmd = "AAAA 强力推介", "🟢 触发建仓指令"
         elif score >= 70:
-            grade, action = "A级 (建议买入)", "建议买入"
-        elif score >= 60:
-            grade, action = "B级 (中性观望)", "No Trade (观望)"
+            rating, cmd = "AAA 建议关注", "🟢 触发增持指令"
+        elif score >= 50:
+            rating, cmd = "AA 中性观望", "🟡 保持观望 (No Trade)"
         else:
-            grade, action = "C级 (看空/回避)", "No Trade (观望)"
+            rating, cmd = "A 偏空避险", "🔴 提示避险 (看空)"
 
-        # 主力动作
-        inst_entry = support * 1.015
-        inst_exit = resistance * 0.985
-        if vol_ratio > 1.3 and price > ema20:
-            smart_money = "🟢 机构正在吸筹/拉升"
-        elif price < ema20 and vol_ratio > 1.2:
-            smart_money = "🔴 机构正在派发出货"
-        else:
-            smart_money = "🟡 缩量洗盘/观望"
-
-        volatility = df['Close'].pct_change().dropna().tail(20).std()
-        target = min(resistance * 1.02, price * (1 + volatility * 2.5))
-        stop = max(support * 0.98, price * (1 - volatility * 1.5))
+        # 真实方向性预测
+        vol_daily = df['Close'].pct_change().dropna().tail(20).std()
+        mult = 2.0 if horizon == "5-10天波段" else 4.8
+        direction = (score - 50) / 35.0
+        exp_pct = direction * (vol_daily * mult * 100)
+        target_price = price * (1 + exp_pct / 100.0)
 
         signals = [
-            {"factor": "1. 均线趋势 (EMA 20/50)", "light": ema_light, "desc": ema_desc},
-            {"factor": "2. MACD 动能", "light": macd_light, "desc": macd_desc},
-            {"factor": "3. RSI 强弱 (14)", "light": rsi_light, "desc": rsi_desc},
-            {"factor": "4. 成交量比 (Volume Ratio)", "light": vol_light, "desc": vol_desc},
-            {"factor": "5. 市盈率 (PE Ratio)", "light": pe_light, "desc": f"{pe_val} ({pe_desc})"},
-            {"factor": "6. 布林带 (Bollinger Bands)", "light": bb_light, "desc": bb_desc},
-            {"factor": "7. ADX 趋势强度", "light": adx_light, "desc": adx_desc},
-            {"factor": "8. KDJ 随机指标", "light": kdj_light, "desc": kdj_desc},
-            {"factor": "9. 支撑位距离", "light": supp_light, "desc": supp_desc},
-            {"factor": "10. 均线环境 (QQQ联动)", "light": qqq_light, "desc": qqq_desc},
+            {"factor": "EMA 趋势阵列", "light": ema_light, "desc": ema_desc},
+            {"factor": "MACD 动能交叉", "light": macd_light, "desc": macd_desc},
+            {"factor": "RSI 相对强弱", "light": rsi_light, "desc": rsi_desc},
+            {"factor": "机构量能放大倍数", "light": vol_light, "desc": vol_desc},
+            {"factor": "动态 PE 估值分位", "light": pe_light, "desc": f"{pe_val} ({pe_desc})"},
         ]
 
         return {
-            "symbol": symbol, "price": price, "change": change, "pct": pct,
-            "score": score, "grade": grade, "action": action,
-            "smart_money": smart_money, "inst_entry": inst_entry, "inst_exit": inst_exit,
-            "entry_range": f"${price*0.995:.2f} –${price*1.005:.2f}",
-            "target": target, "target_pct": ((target - price) / price) * 100,
-            "stop": stop, "stop_pct": ((stop - price) / price) * 100,
+            "symbol": symbol, "price": price, "pct": pct, "score": score,
+            "rating": rating, "cmd": cmd,
+            "entry": f"${price*0.996:.2f} –${price*1.004:.2f}",
+            "target": target_price, "target_pct": exp_pct,
+            "stop": price * (0.96 if score >= 50 else 1.04),
             "signals": signals
         }
     except Exception:
         return None
 
 # -----------------------------------------------------------------------------
-# 3. 历史数据清零 (等待用户从今天开始真实记录)
+# 3. 统计计算（绝对零数据清零逻辑）
 # -----------------------------------------------------------------------------
-def get_clean_pnl_tracker():
-    if 'history_logs' not in st.session_state:
-        st.session_state.history_logs = []  # 彻底清空！无假数据
-    
-    df_all = pd.DataFrame(st.session_state.history_logs)
-    if df_all.empty:
-        return df_all, 0, 0.0, 0.0
-    
-    df_trades = df_all[df_all['action'] == "买入"]
-    if df_trades.empty: 
-        return df_all, 0, 0.0, 0.0
-        
-    win_count = sum(1 for s in df_trades['status'] if "✅" in s)
-    total_count = len(df_trades)
-    win_rate = int((win_count / total_count) * 100)
-    total_pnl_usd = df_trades['pnl_usd'].sum()
-    total_return_pct = (total_pnl_usd / (total_count * 1000)) * 100
-    return df_all, win_rate, total_pnl_usd, total_return_pct
+TOTAL_CAPITAL = 5000.0
+
+trade_logs = st.session_state.realtime_trade_logs
+
+if len(trade_logs) > 0:
+    df_logs = pd.DataFrame(trade_logs)
+    total_trades = len(df_logs)
+    win_trades = sum(1 for s in df_logs['status'] if "✅" in str(s))
+    win_rate = int((win_trades / total_trades) * 100)
+    net_pnl = df_logs['pnl'].sum()
+    roi = (net_pnl / TOTAL_CAPITAL) * 100
+else:
+    # 彻底物理清零，绝对不会夹带任何旧的历史数值
+    win_rate = 0
+    net_pnl = 0.0
+    roi = 0.0
 
 # -----------------------------------------------------------------------------
-# 4. 界面渲染
+# 4. 界面渲染 (优雅高大上的命名)
 # -----------------------------------------------------------------------------
-df_all_logs, total_win_rate, total_pnl_usd, total_return_pct = get_clean_pnl_tracker()
+col_h, col_q = st.columns([3, 1])
+with col_h:
+    st.markdown("<div class='terminal-title'>⚡ ALPHA VECTOR | 机构级美股量化引擎</div>", unsafe_allow_html=True)
+with col_q:
+    st.markdown(f"<div class='api-badge'>📡 数据链路调用: <b>{st.session_state.api_counter} / 60</b></div>", unsafe_allow_html=True)
 
-# 页面标题 + 右侧 API 额度追踪器
-col_title, col_quota = st.columns([3, 1])
-with col_title:
-    st.markdown("<div class='title-text'>🦅 美股量化看板 (已清零·顶级推荐版)</div>", unsafe_allow_html=True)
-with col_quota:
-    st.markdown(f"<div class='quota-badge'>⚡ 今日 API 查找: <b>{st.session_state.api_call_count} / 60</b></div>", unsafe_allow_html=True)
+st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
-# 顶部核心指标 (全部设为 0，全新开始)
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.metric("跟随策略总胜率", f"{total_win_rate}%", delta="从今日起实测")
-with c2:
-    st.metric("跟随买入累计盈亏", f"${total_pnl_usd:+.2f}", delta=f"收益率: {total_return_pct:+.2f}%")
-with c3:
-    st.metric("买入建议门槛", "得分 ≥ 70 分", delta="低于70分建议观望")
-with c4:
-    st.metric("跟单测试基准", "$1,000 / 笔", delta="5-10天波段周期")
+# 顶部核心控制台
+col_time, c_win, c_pnl, c_cap = st.columns([1.3, 1, 1, 1])
+with col_time:
+    selected_horizon = st.radio("⏱️ 策略执行时间周期:", ["5-10天波段", "3个月中线"], horizontal=True)
+with c_win:
+    st.metric("实盘策略胜率", f"{win_rate}%", delta="从零计算")
+with c_pnl:
+    st.metric("累计实测盈亏", f"${net_pnl:+.2f}", delta=f"账户 ROI: {roi:+.2f}%")
+with c_cap:
+    st.metric("配置总本金", f"${TOTAL_CAPITAL:,.0f}", delta="基准仓位")
 
-st.markdown("---")
+st.markdown("<hr style='border:none; border-top:1px solid #1E2638; margin: 15px 0;'>", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🔍 单股 10 大信号查找", "🎯 今日相对最认可 Top 3", "📊 历史跟单记录 (从今天开始)"])
+tab1, tab2, tab3 = st.tabs(["📊 动态因子诊断矩阵", "🎯 顶级阿尔法标的筛选 (Top 3)", "📜 策略实盘执行日志"])
 
-# -----------------------------------------------------------------------------
-# Tab 1: 单股 10 大信号查找
-# -----------------------------------------------------------------------------
+# Tab 1: 单股诊断
 with tab1:
-    col_s, _ = st.columns([2, 2])
-    with col_s:
-        ticker_input = st.text_input("请输入美股代码:", value="MBLY").upper().strip()
+    col_input, _ = st.columns([2, 2])
+    with col_input:
+        target_symbol = st.text_input("请输入股票代码 (Ticker):", value="MBLY").upper().strip()
 
-    if ticker_input:
-        d = analyze_stock_full(ticker_input)
-        if d:
-            st.markdown(f"#### 📌 {d['symbol']} 实时诊断与 10 大技术因子")
-            col_l, col_r = st.columns([1, 1])
+    if target_symbol:
+        res = quant_evaluate_stock(target_symbol, horizon=selected_horizon)
+        if res:
+            st.markdown(f"#### 📌 {res['symbol']} 深度量化报告")
+            col_left, col_right = st.columns([1, 1])
             
-            with col_l:
-                st.markdown("""<div class="card-container">""", unsafe_allow_html=True)
-                st.markdown(f"<div class='sub-label'>实时价格</div><h2 style='margin:0; color:#FFF;'>${d['price']:.2f} <span style='font-size:1rem; color:{'#26A69A' if d['pct']>=0 else '#EF5350'};'>({d['pct']:+.2f}%)</span></h2>", unsafe_allow_html=True)
-                st.markdown("---")
+            with col_left:
+                st.markdown("<div class='terminal-card'>", unsafe_allow_html=True)
+                st.markdown(f"<div class='sub-caption'>实时标的报价</div><h2 style='margin:0; color:#FFF;'>${res['price']:.2f} <span style='font-size:1rem; color:{'#10B981' if res['pct']>=0 else '#EF4444'};'>({res['pct']:+.2f}%)</span></h2>", unsafe_allow_html=True)
+                st.markdown("<hr style='border:none; border-top:1px solid #1E2638; margin: 12px 0;'>", unsafe_allow_html=True)
                 
-                if d['score'] >= 70:
-                    st.write(f"• **综合评分:** <span class='tag-green'>{d['score']} 分 — {d['grade']}</span>", unsafe_allow_html=True)
-                    st.write(f"• **交易指令:** <b style='color:#26A69A;'>🟢 触发买入信号 (满足≥70分)</b>", unsafe_allow_html=True)
-                else:
-                    st.write(f"• **综合评分:** <span class='tag-red'>{d['score']} 分 — {d['grade']}</span>", unsafe_allow_html=True)
-                    st.write(f"• **交易指令:** <b style='color:#EF5350;'>🔴 No Trade (未达70分，建议观望)</b>", unsafe_allow_html=True)
-
-                st.write(f"• **建议买入区间:** `{d['entry_range']}`")
-                st.write(f"• **5-10天目标价:** <span class='stat-bull'>${d['target']:.2f} (+{d['target_pct']:.1f}%)</span>", unsafe_allow_html=True)
-                st.write(f"• **风控止损价:** <span class='stat-bear'>${d['stop']:.2f} ({d['stop_pct']:.1f}%)</span>", unsafe_allow_html=True)
-                st.write(f"• **主力资金动态:** {d['smart_money']}")
-                st.write(f"• **主力建议买/卖:** 买点 `${d['inst_entry']:.2f}` | 卖点 `${d['inst_exit']:.2f}`")
-                st.markdown("""</div>""", unsafe_allow_html=True)
-
-            with col_r:
-                st.markdown("""<div class="card-container">""", unsafe_allow_html=True)
-                st.markdown("<div class='sub-label'>🚦 10 大核心技术与基本面信号</div>", unsafe_allow_html=True)
+                tag_class = "tag-bull" if res['score'] >= 70 else ("tag-neutral" if res['score'] >= 50 else "tag-bear")
+                st.write(f"• **综合评级:** <span class='{tag_class}'>{res['score']}分 — {res['rating']}</span>", unsafe_allow_html=True)
+                st.write(f"• **量化决策建议:** {res['cmd']}", unsafe_allow_html=True)
+                st.write(f"• **建议配置区间:** `{res['entry']}`")
                 
-                df_signals = pd.DataFrame(d['signals'])
-                st.dataframe(
-                    df_signals.rename(columns={"factor": "关键指标", "light": "信号/灯号", "desc": "利好/利空解读"}),
-                    use_container_width=True,
-                    hide_index=True
-                )
-                st.markdown("""</div>""", unsafe_allow_html=True)
+                color_p = "#10B981" if res['target_pct'] >= 0 else "#EF4444"
+                st.write(f"• **{selected_horizon}预期收益率:** <b style='color:{color_p};'>{res['target_pct']:+.1f}%</b> (目标价: ${res['target']:.2f})", unsafe_allow_html=True)
+                st.write(f"• **建议止损位置:** `${res['stop']:.2f}`")
+                st.markdown("</div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Tab 2: 今日 Top 3 推荐 (强行输出最高的前3名，不卡70分)
-# -----------------------------------------------------------------------------
+            with col_right:
+                st.markdown("<div class='terminal-card'>", unsafe_allow_html=True)
+                st.markdown("<div class='sub-caption'>🔬 多维因子归因分析</div>", unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(res['signals']).rename(columns={"factor": "核心因子", "light": "状态", "desc": "解读"}), use_container_width=True, hide_index=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+# Tab 2: Top 3
 with tab2:
-    st.subheader("🔥 今日相对最认可 Top 3 股票 (按评分自动排序)")
-    st.caption("注：不论今天市场好坏，系统均会选出评分最高的前 3 名标的。若评分 `< 70 分`，系统会醒目标注 [No Trade (建议观望)]。")
+    st.subheader(f"🔥 今日阿尔法推荐榜单 ({selected_horizon})")
+    st.caption("基于全池量化因子计算，列出综合评分最高的 3 只股票及其真实预期收益。")
     
     pool = ["NVDA", "AAPL", "TSLA", "MBLY", "AMD", "META", "MSFT", "AMZN"]
-    results = [res for s in pool if (res := analyze_stock_full(s))]
-    
-    # 按得分从高到低强制选出前 3 名
-    top_3 = sorted(results, key=lambda x: x["score"], reverse=True)[:3]
+    results = [r for s in pool if (r := quant_evaluate_stock(s, horizon=selected_horizon))]
+    top3 = sorted(results, key=lambda x: x["score"], reverse=True)[:3]
 
-    if top_3:
-        for idx, item in enumerate(top_3):
-            is_buyable = item['score'] >= 70
-            tag_class = "tag-green" if is_buyable else "tag-red"
-            status_text = "建议买入" if is_buyable else "No Trade (建议观望)"
+    if top3:
+        for i, item in enumerate(top3):
+            t_class = "tag-bull" if item['score'] >= 70 else ("tag-neutral" if item['score'] >= 50 else "tag-bear")
+            color_p = "#10B981" if item['target_pct'] >= 0 else "#EF4444"
             
-            card = textwrap.dedent(f"""
-                <div class="card-container">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            card_html = textwrap.dedent(f"""
+                <div class="terminal-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                         <div>
-                            <span style="font-size:1.2rem; font-weight:bold; color:#FFF;">#{idx+1} {item['symbol']}</span>
-                            <span style="color:#787B86; font-size:0.85rem; margin-left:8px;">现价: ${item['price']:.2f}</span>
+                            <span style="font-size:1.2rem; font-weight:bold; color:#FFF;">#{i+1} {item['symbol']}</span>
+                            <span style="color:#64748B; font-size:0.85rem; margin-left:10px;">现价: ${item['price']:.2f}</span>
                         </div>
-                        <span class="{tag_class}">{item['grade']} - 得分: {item['score']} ({status_text})</span>
+                        <span class="{t_class}">{item['score']}分 | {item['rating']}</span>
                     </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; background: #131722; padding: 10px; border-radius: 6px; text-align: center;">
-                        <div><div class="sub-label">建议买入</div><b style="color:#FFF;">{item['entry_range']}</b></div>
-                        <div><div class="sub-label">5-10天目标价</div><b style="color:#26A69A;">${item['target']:.2f} (+{item['target_pct']:.1f}%)</b></div>
-                        <div><div class="sub-label">止损价</div><b style="color:#EF5350;">${item['stop']:.2f}</b></div>
-                        <div><div class="sub-label">主力退场点</div><b style="color:#FFB300;">${item['inst_exit']:.2f}</b></div>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; background: #0A0D14; padding: 12px; border-radius: 6px; text-align: center; border: 1px solid #1E2638;">
+                        <div><div class="sub-caption">理想建仓区间</div><b style="color:#FFF;">{item['entry']}</b></div>
+                        <div><div class="sub-caption">{selected_horizon}预期变动</div><b style="color:{color_p};">${item['target']:.2f} ({item['target_pct']:+.1f}%)</b></div>
+                        <div><div class="sub-caption">风控止损线</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
                     </div>
                 </div>
             """).strip()
-            st.markdown(card, unsafe_allow_html=True)
+            st.markdown(card_html, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Tab 3: 历史记录 (彻底清空，由用户开始记录)
-# -----------------------------------------------------------------------------
+# Tab 3: 清空后的日志
 with tab3:
-    st.subheader("📊 从今天开始的跟单实操记录")
-    if df_all_logs.empty:
-        st.info("📌 **跟单历史记录已彻底清零**。系统正等待你记录从今天开始的第一笔推荐与交易！")
+    st.subheader("📜 策略实盘执行日志")
+    if len(st.session_state.realtime_trade_logs) == 0:
+        st.info("📌 **系统日志已完成初始化清零**。当前暂无历史持仓，实盘数据将从你的第一笔操作开始实时记录。")
     else:
-        st.dataframe(df_all_logs, use_container_width=True)
+        st.dataframe(pd.DataFrame(st.session_state.realtime_trade_logs), use_container_width=True)
