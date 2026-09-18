@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # Finnhub API Key 配置（请在 Finnhub 免费注册获取后填入）
-FINNHUB_API_KEY = “damh04pr01qvokas3l80damh04pr01qvokas3l8g”
+FINNHUB_API_KEY = "damh04pr01qvokas3l80damh04pr01qvokas3l8g"
 
 st.markdown("""
 <style>
