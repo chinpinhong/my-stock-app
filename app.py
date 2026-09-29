@@ -97,6 +97,21 @@ def log_prediction(symbol, horizon, entry_price, pred_pct, target_low, target_hi
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     _save_pred_log(df)
 
+def auto_log_if_new_today(symbol, horizon, entry_price, pred_pct, target_low, target_high):
+    """给『今日精选』用：同一只股票、同一周期，今天已经自动记过就跳过，避免每次刷新都重复写入。
+    返回 True 表示这次确实新写了一条。"""
+    df = _load_pred_log()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if not df.empty:
+        already = (
+            (df["symbol"] == symbol) & (df["horizon"] == horizon) &
+            (df["logged_at"].astype(str).str.startswith(today_str))
+        ).any()
+        if already:
+            return False
+    log_prediction(symbol, horizon, entry_price, pred_pct, target_low, target_high)
+    return True
+
 def settle_predictions():
     df = _load_pred_log()
     if df.empty:
@@ -376,8 +391,8 @@ with c_cap:
 
 st.markdown("<hr style='border:none; border-top:1px solid #1E2638; margin:15px 0;'>", unsafe_allow_html=True)
 
-tab0, tab1, tab2, tab3, tab4 = st.tabs([
-    "⭐ 今日精选（自动）", "📊 动态因子诊断矩阵", "🎯 顶级阿尔法标的筛选 (Top 3)",
+tab0, tab1, tab3, tab4 = st.tabs([
+    "⭐ 今日精选（自动）", "📊 动态因子诊断矩阵",
     "📜 策略实盘执行日志", "🧠 预测复盘 & 自我校准"
 ])
 
@@ -467,6 +482,7 @@ with tab0:
         st.warning("这次扫描没有找到够格的设置。**没有好机会时不出手，本身就是一种策略。** 可以点上面的按钮重新扫描，或换个时间再看。")
     else:
         st.success(f"🎯 入选 {len(picks)} 个（最多显示 5 个）")
+        newly_logged = 0
         for i, item in enumerate(picks, 1):
             t_class = "tag-bull" if item['score'] >= 65 else ("tag-neutral" if item['score'] >= 40 else "tag-bear")
             with st.container(border=True):
@@ -480,6 +496,14 @@ with tab0:
                            f"　（约 ${item['target_low']:,.2f} ~ ${item['target_high']:,.2f}）", unsafe_allow_html=True)
                 st.markdown(f"**参考止损（1.5×ATR）：** ${item['stop']:,.2f}")
                 st.caption(f"💡 {item['reason']}")
+            if auto_log_if_new_today(item['symbol'], selected_horizon, item['price'], item['target_pct'],
+                                      item['target_low_pct'], item['target_high_pct']):
+                newly_logged += 1
+        if newly_logged:
+            st.caption(f"📌 已自动把这 {newly_logged} 个新加入「预测复盘」记录，到期后会自动结算，不用手动点。"
+                       + (f"（另外 {len(picks)-newly_logged} 个今天已经记过，不会重复）" if newly_logged < len(picks) else ""))
+        else:
+            st.caption("📌 这几个今天已经自动记过复盘了，不会重复写入。")
 
     st.caption("⚠️ 结果由固定规则机械算出，止损止盈仅供参考，请务必自己核对当前价格，不构成投资建议。")
 
@@ -539,36 +563,6 @@ with tab1:
                 """))
         else:
             st.warning("未能获取该代码的有效数据，请检查代码是否正确或稍后重试。")
-
-with tab2:
-    st.subheader(f"🔥 今日阿尔法关注榜单 ({selected_horizon})")
-    st.caption("基于同一套量化因子对股票池打分，列出综合评分最高的 3 只，并给出入选理由。")
-
-    pool = ["NVDA", "AAPL", "TSLA", "MBLY", "AMD", "META", "MSFT", "AMZN"]
-    results = [r for s in pool if (r := quant_evaluate_stock(s, horizon=selected_horizon))]
-    top3 = sorted(results, key=lambda x: x["score"], reverse=True)[:3]
-
-    for i, item in enumerate(top3):
-        t_class = "tag-bull" if item['score'] >= 65 else ("tag-neutral" if item['score'] >= 40 else "tag-bear")
-        color_p = "#10B981" if item['target_pct'] >= 0 else "#EF4444"
-        card_html = textwrap.dedent(f"""
-            <div class="terminal-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div>
-                        <span style="font-size:1.2rem; font-weight:bold; color:#FFF;">#{i+1} {item['symbol']}</span>
-                        <span style="color:#64748B; font-size:0.85rem; margin-left:10px;">现价: ${item['price']:.2f}</span>
-                    </div>
-                    <span class="{t_class}">{item['score']}分 | {item['rating']}</span>
-                </div>
-                <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; background:#0A0D14; padding:12px; border-radius:6px; text-align:center; border:1px solid #1E2638;">
-                    <div><div class="sub-caption">关注区间</div><b style="color:#FFF;">{item['entry']}</b></div>
-                    <div><div class="sub-caption">{selected_horizon}预期区间</div><b style="color:{color_p};">{item['target_low_pct']:+.1f}% ~ {item['target_high_pct']:+.1f}%</b></div>
-                    <div><div class="sub-caption">参考止损</div><b style="color:#EF4444;">${item['stop']:.2f}</b></div>
-                </div>
-                <div class="reason-box" style="margin-top:12px;">💡 {item['reason']}</div>
-            </div>
-        """).strip()
-        st.markdown(card_html, unsafe_allow_html=True)
 
 with tab3:
     st.subheader("📜 策略实盘执行日志")
