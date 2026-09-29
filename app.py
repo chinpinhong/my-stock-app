@@ -303,7 +303,10 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100
         exp_pct = direction * horizon_vol_pct * DAMPEN_FACTOR * calib["factor"]
         exp_pct = float(np.clip(exp_pct, -cap, cap))
-        band = min(horizon_vol_pct * 0.5, cap)
+        # 区间宽度跟着信号强弱走：信号越极端（很看多/很看空），区间越集中在那一侧；
+        # 信号越模糊（接近中性），区间才更宽——避免一个明显看跌的中枢被固定宽度的区间盖成正数。
+        band_frac = 0.6 - 0.35 * abs(direction)
+        band = min(horizon_vol_pct * band_frac, cap)
         target_low_pct = float(np.clip(exp_pct - band, -cap * 1.3, cap * 1.3))
         target_high_pct = float(np.clip(exp_pct + band, -cap * 1.3, cap * 1.3))
         target_price = price * (1 + exp_pct / 100.0)
