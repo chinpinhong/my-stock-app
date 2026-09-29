@@ -405,8 +405,27 @@ def render_grouped_signals(signals):
             st.markdown(f"<div class='signal-row'>• <b>{s['factor']}</b> — {s['desc']}</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-SCAN_POOL = ["NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "GOOGL", "AMD",
-             "AVGO", "NFLX", "CRM", "ORCL", "QCOM", "MU", "SPY", "QQQ"]
+SCAN_POOL = [
+    # 科技
+    "NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "AVGO", "ORCL", "CRM", "ADBE",
+    "AMD", "QCOM", "INTC", "CSCO", "IBM", "NOW", "INTU", "TXN", "MU", "PANW", "TSLA",
+    # 通信/媒体
+    "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T",
+    # 金融
+    "JPM", "BAC", "WFC", "GS", "MS", "V", "MA", "AXP", "BLK", "SCHW",
+    # 医疗
+    "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK", "TMO", "ABT", "DHR", "ISRG",
+    # 消费
+    "WMT", "HD", "COST", "PG", "KO", "PEP", "MCD", "NKE", "SBUX", "TGT", "LOW",
+    # 能源
+    "XOM", "CVX", "COP", "SLB",
+    # 工业
+    "BA", "CAT", "GE", "HON", "UPS", "RTX", "LMT",
+    # 公用事业 / 房地产 / 材料
+    "NEE", "DUK", "PLD", "AMT", "LIN",
+    # 大盘 / 行业 ETF
+    "SPY", "QQQ", "DIA", "IWM",
+]
 MIN_PICKS, MAX_PICKS = 3, 5
 
 @st.cache_data(ttl=300)
@@ -437,7 +456,8 @@ with tab0:
     if top_row[1].button("🔄 立即重新扫描", key="rescan_tab0"):
         scan_today_picks.clear()
 
-    picks, scanned_n = scan_today_picks(SCAN_POOL, selected_horizon)
+    with st.spinner(f"正在扫描 {len(SCAN_POOL)} 只股票，缓存过期时首次扫描约需 30-90 秒，请稍候…"):
+        picks, scanned_n = scan_today_picks(SCAN_POOL, selected_horizon)
     top_row[0].info(f"本次扫描了 {scanned_n} / {len(SCAN_POOL)} 只股票　|　评分 ≥65 才入选，够格的不足 3 只时才放宽到 ≥50")
 
     if not picks:
