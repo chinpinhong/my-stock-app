@@ -183,6 +183,72 @@ def fetch_spy_returns():
         pass
     return 0.0
 
+def _vectorized_score_series(df, spy_close):
+    """跟 quant_evaluate_stock 同一套打分规则的『整段历史』向量化版本（不含 PE，历史上没有逐日估值数据）。
+    只用来给『历史上出现过同样分数时，未来实际涨跌多少』这个统计做数据源，不影响当天显示的分数。"""
+    close, high, low, volume = df['Close'], df['High'], df['Low'], df['Volume']
+
+    ema20, ema50 = close.ewm(span=20).mean(), close.ewm(span=50).mean()
+    ema_sig = np.where((close > ema20) & (ema20 > ema50), 1, np.where((close < ema20) & (ema20 < ema50), -1, 0))
+
+    ema12, ema26 = close.ewm(span=12).mean(), close.ewm(span=26).mean()
+    macd = ema12 - ema26
+    macd_sig = np.where(macd > macd.ewm(span=9).mean(), 1, -1)
+
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi = 100 - 100 / (1 + gain / loss)
+    rsi_sig = np.where(rsi > 70, -1, np.where(rsi < 30, 1, 0))
+
+    sma20, std20 = close.rolling(20).mean(), close.rolling(20).std()
+    upper, lower = sma20 + 2 * std20, sma20 - 2 * std20
+    bb_pos = (close - lower) / (upper - lower)
+    bb_sig = np.where(bb_pos > 0.85, -1, np.where(bb_pos < 0.15, 1, 0))
+
+    vol_ratio = volume / volume.rolling(20).mean()
+    vol_sig = np.where(vol_ratio > 1.3, 1, np.where(vol_ratio > 0.8, 0, -1))
+
+    hi52 = high.rolling(252, min_periods=60).max()
+    lo52 = low.rolling(252, min_periods=60).min()
+    pos52 = (close - lo52) / (hi52 - lo52)
+    pos52_sig = np.where(pos52 > 0.9, 1, np.where(pos52 < 0.15, -1, 0))
+
+    low14, high14 = low.rolling(14).min(), high.rolling(14).max()
+    k_line = 100 * (close - low14) / (high14 - low14)
+    d_line = k_line.rolling(3).mean()
+    kd_sig = np.where((k_line > d_line) & (k_line < 80), 1, np.where((k_line < d_line) & (k_line > 20), -1, 0))
+
+    spy_aligned = spy_close.reindex(close.index).ffill()
+    rel = close.pct_change(20) - spy_aligned.pct_change(20)
+    rel_sig = np.where(rel > 0.03, 1, np.where(rel < -0.03, -1, 0))
+
+    raw_sum = ema_sig + macd_sig + rsi_sig + bb_sig + vol_sig + pos52_sig + kd_sig + rel_sig
+    return pd.Series(np.clip(50 + raw_sum * 6, 5, 95), index=close.index)
+
+
+@st.cache_data(ttl=3600)
+def get_historical_edge(symbol, horizon):
+    """这只股票历史上，出现过跟『今天』差不多分数的时候，未来实际平均涨跌多少（真实数据，不是公式猜的）。
+    样本不够（少于 20 次）就返回 None，调用方会自动退回用公式估算，不瞎编。"""
+    try:
+        df3 = yf.Ticker(symbol).history(period="3y")
+        if len(df3) < 300:
+            return None, 0
+        spy3 = yf.Ticker("SPY").history(period="3y")["Close"] if symbol != "SPY" else df3["Close"]
+        score_hist = _vectorized_score_series(df3, spy3)
+        horizon_days = HORIZON_DAYS[horizon]
+        fwd = df3["Close"].pct_change(horizon_days).shift(-horizon_days)
+        cur_score = float(score_hist.iloc[-1])
+        mask = (score_hist - cur_score).abs() <= 8  # 分数相近（同一档附近）算作『类似情形』
+        sample = fwd[mask].dropna()
+        if len(sample) < 20:
+            return None, len(sample)
+        return float(sample.mean() * 100), len(sample)
+    except Exception:
+        return None, 0
+
+
 @st.cache_data(ttl=120)
 def quant_evaluate_stock(symbol, horizon="5-10天波段"):
     try:
@@ -316,8 +382,20 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
         direction = float(np.clip((score - 50) / 50, -1, 1))
         calib = get_calibration()
         horizon_vol_pct = vol_daily * np.sqrt(horizon_days) * 100
-        exp_pct = direction * horizon_vol_pct * DAMPEN_FACTOR * calib["factor"]
-        exp_pct = float(np.clip(exp_pct, -cap, cap))
+        formula_pct = direction * horizon_vol_pct * DAMPEN_FACTOR
+
+        # 用这只股票历史上『同样分数出现时，未来实际涨跌多少』去修正公式猜的数字，而不是纯拍脑袋。
+        # 样本太少（这只股票很少出现类似分数）就只用公式，不硬凑。
+        edge_pct, edge_n = get_historical_edge(symbol, horizon)
+        if edge_pct is not None:
+            edge_weight = float(np.clip(edge_n / 100, 0.3, 0.7))  # 历史样本越多，越信历史，最高信 70%
+            blended_pct = (1 - edge_weight) * formula_pct + edge_weight * edge_pct
+            edge_note = f"（融合了 {edge_n} 次历史同类分数的真实表现，权重 {edge_weight*100:.0f}%）"
+        else:
+            blended_pct = formula_pct
+            edge_note = "（历史上出现同类分数的次数太少，仅用公式估算，未做历史修正）"
+
+        exp_pct = float(np.clip(blended_pct * calib["factor"], -cap, cap))
         # 区间宽度跟着信号强弱走：信号越极端（很看多/很看空），区间越集中在那一侧；
         # 信号越模糊（接近中性），区间才更宽——避免一个明显看跌的中枢被固定宽度的区间盖成正数。
         band_frac = 0.6 - 0.35 * abs(direction)
@@ -350,6 +428,7 @@ def quant_evaluate_stock(symbol, horizon="5-10天波段"):
             "target_low_pct": target_low_pct, "target_high_pct": target_high_pct,
             "stop": stop, "atr_pct": atr_pct, "high_vol_flag": high_vol_flag,
             "signals": signals, "reason": reason, "calib": calib,
+            "edge_note": edge_note, "edge_n": edge_n,
         }
     except Exception:
         return None
@@ -491,11 +570,14 @@ with tab0:
                 st.markdown(f"**现价：** ${item['price']:,.2f}　（{item['pct']:+.2f}%）")
                 st.markdown(f"**建议关注区间（入场）：** `{item['entry']}`")
                 color_p = "#10B981" if item['target_pct'] >= 0 else "#EF4444"
-                st.markdown(f"**{selected_horizon}止盈区间：** "
-                           f"<span style='color:{color_p};'>{item['target_low_pct']:+.1f}% ~ {item['target_high_pct']:+.1f}%</span>"
-                           f"　（约 ${item['target_low']:,.2f} ~ ${item['target_high']:,.2f}）", unsafe_allow_html=True)
-                st.markdown(f"**参考止损（1.5×ATR）：** ${item['stop']:,.2f}")
-                st.caption(f"💡 {item['reason']}")
+                a, b = st.columns(2)
+                a.markdown(f"🎯 **止盈点位：** <span style='color:{color_p};font-size:1.1rem;'>${item['target']:,.2f}</span>　"
+                          f"<span style='color:{color_p};'>({item['target_pct']:+.1f}%)</span>", unsafe_allow_html=True)
+                b.markdown(f"🛑 **止损点位：** <span style='color:#EF4444;font-size:1.1rem;'>${item['stop']:,.2f}</span>",
+                          unsafe_allow_html=True)
+                st.caption(f"止盈的波动区间（仅供参考，不是另一个买卖点）：${item['target_low']:,.2f} ~ ${item['target_high']:,.2f}"
+                          f"（{item['target_low_pct']:+.1f}% ~ {item['target_high_pct']:+.1f}%）")
+                st.caption(f"💡 {item['reason']}　{item.get('edge_note','')}")
             if auto_log_if_new_today(item['symbol'], selected_horizon, item['price'], item['target_pct'],
                                       item['target_low_pct'], item['target_high_pct']):
                 newly_logged += 1
@@ -532,13 +614,15 @@ with tab1:
                 st.write(f"• **建议关注区间:** `{res['entry']}`")
 
                 color_p = "#10B981" if res['target_pct'] >= 0 else "#EF4444"
-                st.write(f"• **{selected_horizon}预期区间:** "
-                         f"<b style='color:{color_p};'>{res['target_low_pct']:+.1f}% ~ {res['target_high_pct']:+.1f}%</b> "
-                         f"（中枢 ${res['target']:.2f}，区间 ${res['target_low']:.2f} ~ ${res['target_high']:.2f}）",
+                st.write(f"• **🎯 {selected_horizon}止盈点位:** "
+                         f"<b style='color:{color_p};font-size:1.1rem;'>${res['target']:.2f}</b> "
+                         f"<span style='color:{color_p};'>({res['target_pct']:+.1f}%)</span>",
                          unsafe_allow_html=True)
-                st.write(f"• **参考止损位（1.5×ATR）:** `${res['stop']:.2f}`")
+                st.write(f"• **🛑 参考止损点位:** `${res['stop']:.2f}`")
+                st.caption(f"止盈的波动区间（仅供参考，不是另一个买卖点）：${res['target_low']:.2f} ~ ${res['target_high']:.2f}"
+                          f"（{res['target_low_pct']:+.1f}% ~ {res['target_high_pct']:+.1f}%）")
 
-                st.markdown(f"<div class='reason-box'>💡 {res['reason']}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='reason-box'>💡 {res['reason']}<br>{res.get('edge_note','')}</div>", unsafe_allow_html=True)
 
                 if st.button("📌 记录本次预测以供复盘", key=f"log_{res['symbol']}"):
                     log_prediction(res['symbol'], selected_horizon, res['price'], res['target_pct'],
